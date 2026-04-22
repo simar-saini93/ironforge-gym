@@ -1,4 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:ital,wght@0,300;0,400;0,600;0,700;1,300&family=Barlow+Condensed:wght@400;700;900&display=swap");
 @import "tailwindcss";
 
 :root {
@@ -20,7 +19,7 @@ body {
   color: var(--white);
   font-family: 'Barlow', sans-serif;
   overflow-x: hidden;
-  cursor: none;
+  /* cursor: none; */
 }
 
 body::before {
@@ -115,3 +114,52 @@ body::before {
   .cursor, .cursor-follower { display: none; }
   body { cursor: auto; }
 }
+
+
+/* ─────────────────────────────────────────────────────────────
+   ADD THIS TO THE BOTTOM OF YOUR EXISTING globals.css
+   Do NOT replace anything — just append these lines
+───────────────────────────────────────────────────────────── */
+
+/* Wire next/font CSS vars into font stacks */
+:root {
+  --font-bebas-stack:     var(--font-bebas), 'Bebas Neue', sans-serif;
+  --font-barlow-stack:    var(--font-barlow), 'Barlow', sans-serif;
+  --font-condensed-stack: var(--font-barlow-condensed), 'Barlow Condensed', sans-serif;
+}
+
+/* ── IronForge Auth & Admin design tokens ── */
+:root {
+  /* Backgrounds */
+  --if-bg:      #080808;
+  --if-bg2:     #0e0e0e;
+  --if-card:    #111111;
+
+  /* Borders */
+  --if-border:  #1f1f1f;
+  --if-border2: #2a2a2a;
+
+  /* Text */
+  --if-text:    #f0f0f0;
+  --if-mid:     #888888;
+  --if-muted:   #555555;
+
+  /* Accent — matches landing page yellow */
+  --if-accent:  #E8FF00;
+
+  /* Semantic colours */
+  --if-green:   #00E87A;
+  --if-red:     #FF4444;
+  --if-redbg:   rgba(255, 68, 68, 0.08);
+}
+
+/* ── Auth page utility classes ── */
+.font-bebas     { font-family: var(--font-bebas-stack);     }
+.font-barlow    { font-family: var(--font-barlow-stack);    }
+.font-condensed { font-family: var(--font-condensed-stack); }
+
+/* ── Spinner for Lucide Loader2 ── */
+@keyframes if-spin {
+  to { transform: rotate(360deg); }
+}
+.animate-spin { animation: if-spin 0.75s linear infinite; }
