@@ -3,7 +3,7 @@ import { updateSession } from '@/lib/supabase/middleware';
 
 const PUBLIC_ROUTES = ['/', '/contact', '/join', '/thank-you'];
 const PUBLIC_API    = ['/api/plans', '/api/leads', '/api/schedule'];
-const AUTH_ROUTES   = ['/login', '/set-password', '/reset-password'];
+const AUTH_ROUTES   = ['/login', '/reset-password']; // removed /set-password
 
 const ROLE_HOME = {
   admin:   '/admin/dashboard',
@@ -23,7 +23,7 @@ export async function middleware(request) {
   // ── 0. Static assets — skip everything
   if (
     pathname.startsWith('/_next') ||
-    pathname.includes('.') // any file with extension
+    pathname.includes('.')
   ) {
     return NextResponse.next({ request });
   }
@@ -38,31 +38,34 @@ export async function middleware(request) {
     return NextResponse.next({ request });
   }
 
-  // ── 3. Supabase auth callback
+  // ── 3. Supabase auth callback — skip all auth
   if (pathname.startsWith('/auth/')) {
     return NextResponse.next({ request });
   }
 
-  // ── 4. All other routes need session
+  // ── 4. set-password — allow logged in users through (needed for invite flow)
+  if (pathname.startsWith('/set-password')) {
+    return NextResponse.next({ request });
+  }
+
+  // ── 5. All other routes need session
   const { supabaseResponse, user, supabase } = await updateSession(request);
 
   if (!supabase) return NextResponse.next({ request });
 
-  // ── 5. Not logged in
+  // ── 6. Not logged in
   if (!user) {
     if (AUTH_ROUTES.some((r) => pathname.startsWith(r))) return supabaseResponse;
     return redirectTo('/login');
   }
 
-  // ── 6. Fetch profile — use the SSR supabase client (Edge compatible)
-  //    This works because 'profiles: read own' policy allows id = auth.uid()
+  // ── 7. Fetch profile
   const { data: profile } = await supabase
     .from('profiles')
     .select('role, is_active')
     .eq('id', user.id)
     .single();
 
-  // If profile fetch fails — let through to avoid lockout
   if (!profile) return supabaseResponse;
 
   if (!profile.is_active) {
@@ -72,24 +75,24 @@ export async function middleware(request) {
 
   const { role } = profile;
 
-  // ── 7. Redirect away from auth pages if already logged in
+  // ── 8. Redirect away from auth pages if already logged in
   if (AUTH_ROUTES.some((r) => pathname.startsWith(r))) {
     return redirectTo(ROLE_HOME[role] || '/login');
   }
 
-  // ── 8. Admin routes
+  // ── 9. Admin routes
   if (pathname.startsWith('/admin')) {
     if (role !== 'admin') return redirectTo(ROLE_HOME[role] || '/login');
     return supabaseResponse;
   }
 
-  // ── 9. Trainer routes
+  // ── 10. Trainer routes
   if (pathname.startsWith('/trainer')) {
     if (role !== 'trainer') return redirectTo(ROLE_HOME[role] || '/login');
     return supabaseResponse;
   }
 
-  // ── 10. Member routes
+  // ── 11. Member routes
   if (pathname.startsWith('/member')) {
     if (role !== 'member') return redirectTo(ROLE_HOME[role] || '/login');
 
