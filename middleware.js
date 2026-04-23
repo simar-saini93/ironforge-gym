@@ -3,7 +3,7 @@ import { updateSession } from '@/lib/supabase/middleware';
 
 const PUBLIC_ROUTES = ['/', '/contact', '/join', '/thank-you'];
 const PUBLIC_API    = ['/api/plans', '/api/leads', '/api/schedule'];
-const AUTH_ROUTES   = ['/login', '/reset-password']; // removed /set-password
+const AUTH_ROUTES   = ['/login']; // set-password + reset-password handled separately
 
 const ROLE_HOME = {
   admin:   '/admin/dashboard',
@@ -43,8 +43,8 @@ export async function middleware(request) {
     return NextResponse.next({ request });
   }
 
-  // ── 4. set-password — allow logged in users through (needed for invite flow)
-  if (pathname.startsWith('/set-password')) {
+  // ── 4. set-password + reset-password — allow logged in users through
+  if (pathname.startsWith('/set-password') || pathname.startsWith('/reset-password')) {
     return NextResponse.next({ request });
   }
 
