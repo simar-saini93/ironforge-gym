@@ -19,7 +19,6 @@ export async function GET(request) {
   const next       = searchParams.get('next') || '/set-password';
   const error      = searchParams.get('error');
 
-
   if (error) {
     return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(error)}`);
   }
@@ -41,6 +40,10 @@ export async function GET(request) {
     if (!exchangeError) {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
+        // If next is set to a specific page (reset-password, set-password) — go there
+        if (next && next !== '/') {
+          return NextResponse.redirect(`${origin}${next}`);
+        }
         const { data: profile } = await supabase
           .from('profiles').select('role').eq('id', user.id).single();
         if (profile?.role) {
