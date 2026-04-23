@@ -85,7 +85,7 @@ export async function POST(request) {
     }
 
     const { hashed_token } = linkData.properties;
-    const setupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/auth/confirm?token_hash=${hashed_token}&type=recovery&next=/set-password`;
+    const setupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?token_hash=${hashed_token}&type=recovery&next=/set-password`;
 
     // ── Send invite email via Resend ──────────────────────────
     const resend   = new Resend(process.env.RESEND_API_KEY);
