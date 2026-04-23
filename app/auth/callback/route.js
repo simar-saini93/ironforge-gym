@@ -19,6 +19,8 @@ export async function GET(request) {
   const next       = searchParams.get('next') || '/set-password';
   const error      = searchParams.get('error');
 
+   console.log('callback params:', { code, token_hash, type, next, error });
+
   if (error) {
     return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(error)}`);
   }
