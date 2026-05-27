@@ -3,8 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus, Phone, Mail, UserCheck, ExternalLink, Trash2 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import { formatDateTime } from '@/utils/format';
+import { formatDateTime } from '@/lib/utils/format';
 import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Select from '@/components/ui/Select';
@@ -21,8 +20,6 @@ const STATUSES = ['new', 'contacted', 'interested', 'converted', 'lost'];
 
 export default function LeadDetail({ leadId }) {
   const router   = useRouter();
-  const supabase = createClient();
-
   const [lead,          setLead]          = useState(null);
   const [followups,     setFollowups]     = useState([]);
   const [loading,       setLoading]       = useState(true);
@@ -37,33 +34,27 @@ export default function LeadDetail({ leadId }) {
 
   async function fetchLead() {
     setLoading(true);
-    const [{ data: l }, { data: f }] = await Promise.all([
-      supabase.from('leads').select('*').eq('id', leadId).single(),
-      supabase.from('lead_followups').select('*').eq('lead_id', leadId).order('followed_at', { ascending: false }),
-    ]);
-    setLead(l);
-    setFollowups(f || []);
-
-    // If converted, fetch member name
-    if (l?.converted_member_id) {
-      const { data: member } = await supabase
-        .from('members')
-        .select('id, profile:profiles(first_name, last_name)')
-        .eq('id', l.converted_member_id)
-        .single();
-      if (member) {
-        setMemberName(`${member.profile?.first_name || ''} ${member.profile?.last_name || ''}`.trim());
-      }
+    try {
+      const res  = await fetch(`/api/admin/leads/${leadId}`);
+      if (!res.ok) throw new Error('Failed to fetch lead');
+      const json = await res.json();
+      setLead(json.lead);
+      setFollowups(json.followups || []);
+      if (json.memberName) setMemberName(json.memberName);
+    } catch (err) {
+      console.error('[LeadDetail]', err);
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   }
 
   async function handleDelete() {
     if (!confirm('Permanently delete this lead? This cannot be undone.')) return;
     try {
-      await supabase.from('lead_followups').delete().eq('lead_id', leadId);
-      await supabase.from('leads').delete().eq('id', leadId);
+      await fetch(`/api/admin/leads/${leadId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete' }),
+      });
       router.push('/admin/crm');
     } catch (err) {
       alert(err?.message || 'Failed to delete lead');
@@ -71,42 +62,19 @@ export default function LeadDetail({ leadId }) {
   }
 
   async function updateStatus(status) {
-    // Confirm before converting — irreversible action
     if (status === 'converted') {
-      if (!confirm('Convert this lead to a member? This will permanently remove them from the leads list and cannot be undone.')) return;
+      // Redirect to create member form with lead pre-filled
+      // Lead will be deleted after member is successfully created
+      router.push(`/admin/members/new?from_lead=${leadId}`);
+      return;
     }
+
     setUpdatingStatus(true);
     try {
-      // If converting — find matching member by email/phone and link
-      if (status === 'converted') {
-        let memberId = null;
-
-        if (lead.email) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('id')
-            .eq('email', lead.email)
-            .maybeSingle();
-
-          if (profile) {
-            const { data: member } = await supabase
-              .from('members')
-              .select('id')
-              .eq('profile_id', profile.id)
-              .maybeSingle();
-            if (member) memberId = member.id;
-          }
-        }
-
-        // Delete converted lead from DB permanently
-        await supabase.from('lead_followups').delete().eq('lead_id', leadId);
-        await supabase.from('leads').delete().eq('id', leadId);
-        router.push('/admin/crm');
-        return;
-      } else {
-        await supabase.from('leads').update({ status }).eq('id', leadId);
-      }
-
+      await fetch(`/api/admin/leads/${leadId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_status', status }),
+      });
       fetchLead();
     } catch (err) {
       console.error('Update status error:', err?.message);
@@ -122,15 +90,11 @@ export default function LeadDetail({ leadId }) {
 
     setAddingFU(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { error: insertError } = await supabase.from('lead_followups').insert({
-        lead_id:     leadId,
-        method:      fuForm.method,
-        notes:       fuForm.notes,
-        followed_by: user.id,
-        followed_at: new Date().toISOString(),
+      const res = await fetch(`/api/admin/leads/${leadId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add_followup', method: fuForm.method, notes: fuForm.notes }),
       });
-      if (insertError) throw new Error(insertError.message);
+      if (!res.ok) throw new Error((await res.json()).error);
       setFollowupOpen(false);
       setFuForm({ method: '', notes: '' });
       fetchLead();

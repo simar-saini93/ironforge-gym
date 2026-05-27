@@ -7,7 +7,6 @@ import {
   CalendarDays, Dumbbell, AlertTriangle, Settings,
   Check, Trash2, Sun, Moon,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 
@@ -224,8 +223,7 @@ function CalendarTab({ holidays, duty, dayOverrides, settings, onDayClick, selec
 // ════════════════════════════════════════════════════════════
 // TAB 3 — Gym Timings
 // ════════════════════════════════════════════════════════════
-function TimingsTab({ settings, dayOverrides, onSave }) {
-  const supabase = createClient();
+function TimingsTab({ settings, dayOverrides, branchId, onSave }) {
   const [localSettings, setLocalSettings] = useState(settings || { default_open: '06:00', default_close: '22:00', weekly_off_days: [] });
   const [localOverrides, setLocalOverrides] = useState(dayOverrides || []);
   const [saving, setSaving] = useState(false);
@@ -265,14 +263,10 @@ function TimingsTab({ settings, dayOverrides, onSave }) {
   async function saveSettings() {
     setSaving(true);
     try {
-      const { data: branch } = await supabase.from('branches').select('id').limit(1).single();
-      await supabase.from('gym_schedule_settings').upsert({
-        branch_id:        branch.id,
-        default_open:     localSettings.default_open,
-        default_close:    localSettings.default_close,
-        weekly_off_days:  localSettings.weekly_off_days,
-        updated_at:       new Date().toISOString(),
-      }, { onConflict: 'branch_id' });
+      await fetch('/api/admin/schedule', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'save_settings', branchId, data: localSettings }),
+      });
       onSave();
     } catch (err) { alert(err?.message || 'Failed to save'); }
     finally { setSaving(false); }
@@ -283,22 +277,20 @@ function TimingsTab({ settings, dayOverrides, onSave }) {
     if (Object.keys(errs).length > 0) { setOverrideErrors(errs); return; }
     setOverrideErrors({});
     try {
-      const { data: branch } = await supabase.from('branches').select('id').limit(1).single();
-      await supabase.from('gym_day_overrides').upsert({
-        branch_id:  branch.id,
-        date:       overrideForm.date,
-        open_time:  overrideForm.is_closed ? null : overrideForm.open_time,
-        close_time: overrideForm.is_closed ? null : overrideForm.close_time,
-        is_closed:  overrideForm.is_closed,
-        notes:      overrideForm.notes || null,
-      }, { onConflict: 'branch_id,date' });
+      await fetch('/api/admin/schedule', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'save_override', branchId, data: { ...overrideForm, open_time: overrideForm.is_closed ? null : overrideForm.open_time, close_time: overrideForm.is_closed ? null : overrideForm.close_time } }),
+      });
       setAddOverrideOpen(false);
       onSave();
     } catch (err) { alert(err?.message || 'Failed to save override'); }
   }
 
   async function deleteOverride(id) {
-    await supabase.from('gym_day_overrides').delete().eq('id', id);
+    await fetch('/api/admin/schedule', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'delete_override', branchId, data: { id } }),
+    });
     setLocalOverrides((p) => p.filter((o) => o.id !== id));
   }
 
@@ -438,8 +430,7 @@ function TimingsTab({ settings, dayOverrides, onSave }) {
 // ════════════════════════════════════════════════════════════
 // TAB 4 — Holidays
 // ════════════════════════════════════════════════════════════
-function HolidaysTab({ holidays, onSave }) {
-  const supabase = createClient();
+function HolidaysTab({ holidays, branchId, onSave }) {
   const [addOpen,    setAddOpen]    = useState(false);
   const [saving,     setSaving]     = useState(false);
   const [cancelling, setCancelling] = useState(null);
@@ -465,21 +456,10 @@ function HolidaysTab({ holidays, onSave }) {
     setFormErrors({});
     setSaving(true);
     try {
-      const { data: branch } = await supabase.from('branches').select('id, name').limit(1).single();
-      await supabase.from('gym_holidays').insert({
-        branch_id: branch.id,
-        date:      form.date,
-        title:     form.title,
-        reason:    form.reason || null,
+      await fetch('/api/admin/schedule', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add_holiday', branchId, data: { date: form.date, title: form.title, reason: form.reason || null } }),
       });
-
-      // Send notification email via API
-      await fetch('/api/admin/schedule/holidays', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: form.date, title: form.title, reason: form.reason, action: 'add' }),
-      });
-
       setAddOpen(false);
       setForm({ date: '', title: '', reason: '' });
       onSave();
@@ -491,15 +471,10 @@ function HolidaysTab({ holidays, onSave }) {
     if (!confirm(`Cancel holiday "${holiday.title}" on ${holiday.date}? Members will be notified the gym is open.`)) return;
     setCancelling(holiday.id);
     try {
-      await supabase.from('gym_holidays').update({ cancelled_at: new Date().toISOString() }).eq('id', holiday.id);
-
-      // Send cancellation email
-      await fetch('/api/admin/schedule/holidays', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: holiday.date, title: holiday.title, action: 'cancel' }),
+      await fetch('/api/admin/schedule', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel_holiday', branchId, data: { id: holiday.id } }),
       });
-
       onSave();
     } catch (err) { alert(err?.message || 'Failed to cancel holiday'); }
     finally { setCancelling(null); }
@@ -604,39 +579,18 @@ function HolidaysTab({ holidays, onSave }) {
 // MAIN — ScheduleView
 // ════════════════════════════════════════════════════════════
 export default function ScheduleView() {
-  const supabase = createClient();
   const [activeTab,    setActiveTab]    = useState('calendar');
   const [loading,      setLoading]      = useState(true);
   const [selectedDate, setSelectedDate] = useState(null);
-  const [data,         setData]         = useState({ settings: null, holidays: [], duty: [], dayOverrides: [], trainers: [] });
+  const [data,         setData]         = useState({ branchId: null, settings: null, holidays: [], duty: [], dayOverrides: [], trainers: [] });
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const { data: branch } = await supabase.from('branches').select('id').limit(1).single();
-      if (!branch) { setLoading(false); return; }
-
-      const [
-        { data: settings    },
-        { data: holidays    },
-        { data: duty        },
-        { data: dayOverrides},
-        { data: trainers    },
-      ] = await Promise.all([
-        supabase.from('gym_schedule_settings').select('*').eq('branch_id', branch.id).maybeSingle(),
-        supabase.from('gym_holidays').select('*').eq('branch_id', branch.id).order('date', { ascending: true }),
-        supabase.from('trainer_duty').select('*, trainer:trainers(id, profile:profiles(first_name, last_name))').eq('branch_id', branch.id).gte('date', new Date().toISOString().split('T')[0]),
-        supabase.from('gym_day_overrides').select('*').eq('branch_id', branch.id).order('date', { ascending: true }),
-        supabase.from('trainers').select('id, specialization, branch_id, profile:profiles(first_name, last_name)').eq('is_active', true),
-      ]);
-
-      // Shape duty with trainer names
-      const shapedDuty = (duty || []).map((d) => ({
-        ...d,
-        trainer_name: `${d.trainer?.profile?.first_name || ''} ${d.trainer?.profile?.last_name || ''}`.trim(),
-      }));
-
-      setData({ settings, holidays: holidays || [], duty: shapedDuty, dayOverrides: dayOverrides || [], trainers: trainers || [] });
+      const res  = await fetch('/api/admin/schedule');
+      if (!res.ok) throw new Error('Failed to fetch schedule');
+      const json = await res.json();
+      setData(json);
     } catch (err) { console.error('Schedule fetch error:', err?.message); }
     finally { setLoading(false); }
   }, []);
@@ -683,8 +637,8 @@ export default function ScheduleView() {
             />
           )}
           {activeTab === 'duty'     && <DutyTab trainers={data.trainers} />}
-          {activeTab === 'timings'  && <TimingsTab settings={data.settings} dayOverrides={data.dayOverrides} onSave={fetchAll} />}
-          {activeTab === 'holidays' && <HolidaysTab holidays={data.holidays} onSave={fetchAll} />}
+          {activeTab === 'timings'  && <TimingsTab settings={data.settings} dayOverrides={data.dayOverrides} branchId={data.branchId} onSave={fetchAll} />}
+          {activeTab === 'holidays' && <HolidaysTab holidays={data.holidays} branchId={data.branchId} onSave={fetchAll} />}
         </>
       )}
     </div>

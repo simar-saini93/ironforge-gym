@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: ironforge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ironforge
+      POSTGRES_PASSWORD: ironforge123
+      POSTGRES_DB: ironforge_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - ironforge_pgdata:/var/lib/postgresql/data
+
+volumes:
+  ironforge_pgdata:
+  

@@ -1,10 +1,9 @@
 'use client';
-import CurrencySettings from '@/components/admin/settings/CurrencySettings';
-import { formatCurrency } from '@/utils/format';
+import { formatCurrency } from '@/lib/utils/format';
+import CurrencySettings  from '@/components/admin/settings/CurrencySettings';
 
 import { useState, useEffect } from 'react';
 import { Save, Plus, Edit2, Trash2, ToggleLeft, ToggleRight, Check, X } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import Badge from '@/components/ui/Badge';
@@ -170,8 +169,7 @@ function PlanRow({ plan, onEdit, onDelete, onToggle }) {
 
 // ── Plan Modal (create + edit) ───────────────────────────────
 function PlanModal({ open, onClose, plan, onSuccess }) {
-  const supabase = createClient();
-  const isEdit   = !!plan?.id;
+  const isEdit = !!plan?.id;
 
   const [loading, setLoading] = useState(false);
   const [errors,  setErrors]  = useState({});
@@ -208,26 +206,21 @@ function PlanModal({ open, onClose, plan, onSuccess }) {
 
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { data: profile }  = await supabase
-        .from('profiles').select('branch_id').eq('id', user.id).single();
-
       const payload = {
         billing_cycle: form.billing_cycle,
         price:         Number(form.price),
         description:   form.description || null,
         is_active:     form.is_active,
-        branch_id:     profile.branch_id,
       };
 
-      if (isEdit) {
-        const { error } = await supabase
-          .from('membership_plans').update(payload).eq('id', plan.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from('membership_plans').insert(payload);
-        if (error) throw error;
+      const res = await fetch('/api/admin/settings/plans', {
+        method:  isEdit ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(isEdit ? { id: plan.id, ...payload } : payload),
+      });
+      if (!res.ok) {
+        const json = await res.json();
+        throw new Error(json.error || 'Failed to save plan');
       }
 
       onSuccess();
@@ -338,7 +331,7 @@ function PlanModal({ open, onClose, plan, onSuccess }) {
 
 // ── Main SettingsView ─────────────────────────────────────────
 export default function SettingsView() {
-  const supabase = createClient();
+
 
   const [branchLoading, setBranchLoading] = useState(true);
   const [branchSaving,  setBranchSaving]  = useState(false);
@@ -358,41 +351,36 @@ export default function SettingsView() {
 
   async function fetchBranch() {
     setBranchLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    const { data: profile }  = await supabase
-      .from('profiles').select('branch_id').eq('id', user.id).single();
-
-    if (!profile?.branch_id) { setBranchLoading(false); return; }
-    setBranchId(profile.branch_id);
-
-    const { data } = await supabase
-      .from('branches').select('*').eq('id', profile.branch_id).single();
-
-    if (data) {
-      setBranchForm({
-        name:    data.name    || '',
-        address: data.address || '',
-        phone:   data.phone   || '',
-        email:   data.email   || '',
-      });
+    try {
+      const res  = await fetch('/api/admin/settings/branch');
+      const json = await res.json();
+      if (json.branch) {
+        setBranchId(json.branch.id);
+        setBranchForm({
+          name:    json.branch.name    || '',
+          address: json.branch.address || '',
+          phone:   json.branch.phone   || '',
+          email:   json.branch.email   || '',
+        });
+      }
+    } catch (err) {
+      console.error('[fetchBranch]', err);
+    } finally {
+      setBranchLoading(false);
     }
-    setBranchLoading(false);
   }
 
   async function fetchPlans() {
     setPlansLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    const { data: profile }  = await supabase
-      .from('profiles').select('branch_id').eq('id', user.id).single();
-
-    const { data } = await supabase
-      .from('membership_plans')
-      .select('*')
-      .eq('branch_id', profile.branch_id)
-      .order('price', { ascending: true });
-
-    setPlans(data || []);
-    setPlansLoading(false);
+    try {
+      const res  = await fetch('/api/admin/settings/plans');
+      const json = await res.json();
+      setPlans(json.plans || []);
+    } catch (err) {
+      console.error('[fetchPlans]', err);
+    } finally {
+      setPlansLoading(false);
+    }
   }
 
   async function saveBranch() {
@@ -402,17 +390,12 @@ export default function SettingsView() {
 
     setBranchSaving(true);
     try {
-      const { error } = await supabase
-        .from('branches')
-        .update({
-          name:    branchForm.name.trim(),
-          address: branchForm.address || null,
-          phone:   branchForm.phone   || null,
-          email:   branchForm.email   || null,
-        })
-        .eq('id', branchId);
-
-      if (error) throw error;
+      const res = await fetch('/api/admin/settings/branch', {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(branchForm),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
       setBranchSaved(true);
       setTimeout(() => setBranchSaved(false), 3000);
     } catch (err) {
@@ -423,18 +406,18 @@ export default function SettingsView() {
   }
 
   async function togglePlan(plan) {
-    await supabase
-      .from('membership_plans')
-      .update({ is_active: !plan.is_active })
-      .eq('id', plan.id);
+    await fetch('/api/admin/settings/plans', {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ id: plan.id, is_active: !plan.is_active }),
+    });
     fetchPlans();
   }
 
   async function deletePlan(plan) {
     if (!confirm(`Delete "${plan.billing_cycle}" plan? This cannot be undone.`)) return;
-    const { error } = await supabase
-      .from('membership_plans').delete().eq('id', plan.id);
-    if (error) {
+    const res = await fetch(`/api/admin/settings/plans?id=${plan.id}`, { method: 'DELETE' });
+    if (!res.ok) {
       alert('Cannot delete — this plan may have active subscriptions.');
       return;
     }

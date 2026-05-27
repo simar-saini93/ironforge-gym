@@ -2,15 +2,14 @@
 
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, LogOut } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
+import { useClerk } from '@clerk/nextjs';
 
 export default function MemberInactivePage() {
-  const router   = useRouter();
-  const supabase = createClient();
+  const router       = useRouter();
+  const { signOut }  = useClerk();
 
   async function handleLogout() {
-    await supabase.auth.signOut();
-    router.push('/login');
+    await signOut({ redirectUrl: '/login' });
   }
 
   return (

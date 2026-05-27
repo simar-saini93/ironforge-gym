@@ -9,8 +9,7 @@ import {
   Users, CalendarDays, CheckCircle2, XCircle,
   TrendingUp, Clock, AlertTriangle, Dumbbell,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import { formatDate, fullName, initials } from '@/utils/format';
+import { formatDate, fullName, initials } from '@/lib/utils/format';
 
 const T = {
   accent:    '#22c55e',
@@ -31,14 +30,9 @@ const T = {
   orangebg:  'rgba(249,115,22,0.09)',
 };
 
-// ── Stat card — member portal style ─────────────────────────
 function StatCard({ icon: Icon, label, value, color, bg, onClick }) {
   return (
-    <div onClick={onClick} style={{
-      background: T.card, border: `1px solid ${T.border}`,
-      borderRadius: 14, padding: '20px',
-      cursor: onClick ? 'pointer' : 'default', transition: 'all .2s',
-    }}
+    <div onClick={onClick} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, padding: '20px', cursor: onClick ? 'pointer' : 'default', transition: 'all .2s' }}
       onMouseEnter={(e) => { if (onClick) { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.transform = 'translateY(-2px)'; } }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.transform = 'none'; }}
     >
@@ -46,13 +40,9 @@ function StatCard({ icon: Icon, label, value, color, bg, onClick }) {
         <div style={{ width: 38, height: 38, borderRadius: 10, background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <Icon size={18} style={{ color }} />
         </div>
-        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: T.text2 }}>
-          {label}
-        </span>
+        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: T.text2 }}>{label}</span>
       </div>
-      <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 32, letterSpacing: 1, color: T.text, lineHeight: 1 }}>
-        {value}
-      </p>
+      <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 32, letterSpacing: 1, color: T.text, lineHeight: 1 }}>{value}</p>
     </div>
   );
 }
@@ -62,8 +52,7 @@ function Skeleton({ h = 100 }) {
 }
 
 export default function TrainerDashboard() {
-  const router   = useRouter();
-  const supabase = createClient();
+  const router = useRouter();
 
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
@@ -76,36 +65,9 @@ export default function TrainerDashboard() {
   async function fetchData() {
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      const { data: profile } = await supabase
-        .from('profiles').select('first_name, last_name, branch_id').eq('id', user.id).single();
-
-      const { data: trainer } = await supabase
-        .from('trainers').select('id, specialization').eq('profile_id', user.id).single();
-
-      if (!trainer) { setLoading(false); return; }
-
-      const [{ data: assignments }, { data: todayAtt }, { data: attHistory }] = await Promise.all([
-        supabase
-          .from('member_trainer_assignments')
-          .select('id, member:members(id, member_number, profile:profiles(first_name, last_name))')
-          .eq('trainer_id', trainer.id).eq('is_active', true),
-
-        supabase
-          .from('trainer_attendance')
-          .select('id, status').eq('trainer_id', trainer.id).eq('date', today).maybeSingle(),
-
-        supabase
-          .from('trainer_attendance')
-          .select('status').eq('trainer_id', trainer.id).order('date', { ascending: false }).limit(30),
-      ]);
-
-      const presentCount = (attHistory || []).filter((a) => a.status === 'present').length;
-      const attRate      = attHistory?.length > 0 ? Math.round((presentCount / attHistory.length) * 100) : 0;
-
-      setData({ profile, trainer, assignments: assignments || [], todayAtt, attRate, presentCount });
+      const res  = await fetch('/api/trainer/dashboard');
+      if (!res.ok) throw new Error('Failed to fetch dashboard');
+      setData(await res.json());
     } catch (err) {
       console.error('Trainer dashboard error:', err?.message);
     } finally {
@@ -114,18 +76,14 @@ export default function TrainerDashboard() {
   }
 
   async function markAttendance(status) {
-    if (!data?.trainer) return;
     setMarking(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { data: profile }  = await supabase.from('profiles').select('branch_id').eq('id', user.id).single();
-      await supabase.from('trainer_attendance').upsert({
-        trainer_id: data.trainer.id,
-        branch_id:  profile.branch_id,
-        date:       today,
-        status,
-        marked_by:  user.id,
-      }, { onConflict: 'trainer_id,date' });
+      const res = await fetch('/api/trainer/dashboard', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ status }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
       fetchData();
     } catch (err) {
       console.error('Mark attendance error:', err?.message);
@@ -148,7 +106,7 @@ export default function TrainerDashboard() {
     );
   }
 
-  if (!data) return (
+  if (!data?.trainer) return (
     <div style={{ textAlign: 'center', padding: 40, color: T.text2, fontFamily: "'Barlow', sans-serif" }}>
       No trainer profile found. Contact admin.
     </div>
@@ -161,34 +119,20 @@ export default function TrainerDashboard() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}`}</style>
 
-      {/* ── Holiday ribbon ── */}
       <HolidayRibbon />
 
       {/* Welcome banner */}
-      <div style={{
-        background: T.accentbg2, border: `1px solid ${T.accent}`,
-        borderRadius: 14, padding: '20px 24px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        flexWrap: 'wrap', gap: 12,
-      }}>
+      <div style={{ background: T.accentbg2, border: `1px solid ${T.accent}`, borderRadius: 14, padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <p style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.2em', textTransform: 'uppercase', color: T.accent, marginBottom: 4 }}>
-            Welcome back
-          </p>
-          <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, letterSpacing: 1, color: T.text, lineHeight: 1 }}>
-            {firstName}
-          </h1>
+          <p style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.2em', textTransform: 'uppercase', color: T.accent, marginBottom: 4 }}>Welcome back</p>
+          <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, letterSpacing: 1, color: T.text, lineHeight: 1 }}>{firstName}</h1>
           {trainer.specialization && (
-            <p style={{ fontFamily: "'Barlow', sans-serif", fontSize: 13, color: T.text2, marginTop: 4 }}>
-              {trainer.specialization}
-            </p>
+            <p style={{ fontFamily: "'Barlow', sans-serif", fontSize: 13, color: T.text2, marginTop: 4 }}>{trainer.specialization}</p>
           )}
         </div>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 20, background: T.accentbg, border: `1px solid ${T.accent}` }}>
           <div style={{ width: 7, height: 7, borderRadius: '50%', background: T.accent }} />
-          <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: T.accent }}>
-            Active Trainer
-          </span>
+          <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: T.accent }}>Active Trainer</span>
         </div>
       </div>
 
@@ -200,7 +144,7 @@ export default function TrainerDashboard() {
         <StatCard icon={Clock}        label="Today"           value={new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} color="#38bdf8" bg="rgba(56,189,248,0.09)" />
       </div>
 
-      {/* Today's attendance card */}
+      {/* Today's attendance */}
       <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, overflow: 'hidden' }}>
         <div style={{ padding: '14px 20px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, letterSpacing: 1, color: T.text }}>Today's Attendance</span>
@@ -209,15 +153,10 @@ export default function TrainerDashboard() {
         <div style={{ padding: '20px 24px' }}>
           {todayAtt ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '10px 20px', borderRadius: 10,
-                background: todayAtt.status === 'present' ? T.greenbg : todayAtt.status === 'absent' ? T.redbg : T.orangebg,
-                border: `1px solid ${todayAtt.status === 'present' ? T.green : todayAtt.status === 'absent' ? T.red : T.orange}`,
-              }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px', borderRadius: 10, background: todayAtt.status === 'present' ? T.greenbg : todayAtt.status === 'absent' ? T.redbg : T.orangebg, border: `1px solid ${todayAtt.status === 'present' ? T.green : todayAtt.status === 'absent' ? T.red : T.orange}` }}>
                 {todayAtt.status === 'present'
                   ? <CheckCircle2 size={16} style={{ color: T.green }} />
-                  : <XCircle     size={16} style={{ color: todayAtt.status === 'absent' ? T.red : T.orange }} />
+                  : <XCircle size={16} style={{ color: todayAtt.status === 'absent' ? T.red : T.orange }} />
                 }
                 <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 14, fontWeight: 700, letterSpacing: '.1em', textTransform: 'capitalize', color: todayAtt.status === 'present' ? T.green : todayAtt.status === 'absent' ? T.red : T.orange }}>
                   {todayAtt.status}
@@ -227,9 +166,7 @@ export default function TrainerDashboard() {
             </div>
           ) : (
             <>
-              <p style={{ fontFamily: "'Barlow', sans-serif", fontSize: 14, color: T.text2, marginBottom: 16 }}>
-                Mark your attendance for today.
-              </p>
+              <p style={{ fontFamily: "'Barlow', sans-serif", fontSize: 14, color: T.text2, marginBottom: 16 }}>Mark your attendance for today.</p>
               <div style={{ display: 'flex', gap: 10 }}>
                 {[
                   { status: 'present', label: 'Present',  color: T.green,  bg: T.greenbg  },
@@ -253,16 +190,12 @@ export default function TrainerDashboard() {
       {/* Assigned members */}
       <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, overflow: 'hidden' }}>
         <div style={{ padding: '14px 20px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, letterSpacing: 1, color: T.text }}>
-            My Members ({assignments.length})
-          </span>
+          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, letterSpacing: 1, color: T.text }}>My Members ({assignments.length})</span>
           <button onClick={() => router.push('/trainer/members')}
             style={{ background: 'none', border: 'none', fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: T.accent, cursor: 'pointer', opacity: .85 }}
             onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
             onMouseLeave={(e) => (e.currentTarget.style.opacity = '.85')}
-          >
-            View All
-          </button>
+          >View All</button>
         </div>
 
         {assignments.length === 0 ? (
@@ -276,12 +209,7 @@ export default function TrainerDashboard() {
               const name = fullName(a.member?.profile);
               const ini  = initials(name);
               return (
-                <div key={a.id} style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  padding: '10px 12px', background: T.card2,
-                  border: `1px solid ${T.border}`, borderRadius: 10,
-                  cursor: 'pointer', transition: 'border-color .15s',
-                }}
+                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: T.card2, border: `1px solid ${T.border}`, borderRadius: 10, cursor: 'pointer', transition: 'border-color .15s' }}
                   onMouseEnter={(e) => (e.currentTarget.style.borderColor = T.accent)}
                   onMouseLeave={(e) => (e.currentTarget.style.borderColor = T.border)}
                 >

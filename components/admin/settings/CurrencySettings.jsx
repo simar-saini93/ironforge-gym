@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { Search, Check } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import { CURRENCIES, getCurrency } from '@/lib/currencies';
 import Button from '@/components/ui/Button';
 
@@ -15,7 +14,6 @@ const S = {
 };
 
 export default function CurrencySettings() {
-  const supabase  = useRef(createClient()).current;
   const [current,  setCurrent]  = useState('BZD');
   const [search,   setSearch]   = useState('');
   const [saving,   setSaving]   = useState(false);
@@ -23,11 +21,13 @@ export default function CurrencySettings() {
   const [loading,  setLoading]  = useState(true);
 
   useEffect(() => {
-    supabase.from('branches').select('currency').limit(1).single()
-      .then(({ data }) => {
-        if (data?.currency) setCurrent(data.currency);
+    fetch('/api/branch')
+      .then((r) => r.json())
+      .then(({ branch }) => {
+        if (branch?.currency) setCurrent(branch.currency);
         setLoading(false);
-      });
+      })
+      .catch(() => setLoading(false));
   }, []);
 
   const filtered = CURRENCIES.filter((c) =>
@@ -39,7 +39,12 @@ export default function CurrencySettings() {
   async function handleSave() {
     setSaving(true);
     try {
-      await supabase.from('branches').update({ currency: current }).eq('id', (await supabase.from('branches').select('id').limit(1).single()).data?.id);
+      const res = await fetch('/api/admin/settings/branch', {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ currency: current }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {

@@ -22,7 +22,7 @@ export default function ActivityFeed({ activities = [] }) {
       {/* Header */}
       <div
         className="flex items-center gap-2 px-5 py-3.5 flex-shrink-0"
-        style={{ borderBottom: '1px solid var(--if-border)' }}
+        style={{ borderBottom: '1px solid var(--if-border)', padding: '0.5rem' }}
       >
         <div
           className="rounded-full"
@@ -46,7 +46,7 @@ export default function ActivityFeed({ activities = [] }) {
         {activities.length === 0 ? (
           <div
             className="flex items-center justify-center py-10"
-            style={{ color: 'var(--if-muted)', fontSize: 13 }}
+            style={{ color: 'var(--if-muted)', fontSize: 13, padding: '0.5rem' }}
           >
             No recent activity
           </div>

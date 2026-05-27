@@ -3,17 +3,15 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Save, ArrowLeft } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import Input from '@/components/ui/Input';
 import Select from '@/components/ui/Select';
 import Button from '@/components/ui/Button';
 import { PageSpinner } from '@/components/ui/Spinner';
 import { memberStep1Schema, flattenZodErrors } from '@/lib/schemas/member';
-import { fullName } from '@/utils/format';
+import { fullName } from '@/lib/utils/format';
 
 export default function EditMemberForm({ memberId }) {
-  const router   = useRouter();
-  const supabase = createClient();
+  const router = useRouter();
 
   const [loading,   setLoading]   = useState(true);
   const [saving,    setSaving]    = useState(false);
@@ -26,23 +24,20 @@ export default function EditMemberForm({ memberId }) {
   });
 
   useEffect(() => {
-    supabase
-      .from('members')
-      .select('date_of_birth, gender, address, emergency_name, emergency_phone, profile:profiles(id, first_name, last_name, email, phone)')
-      .eq('id', memberId)
-      .single()
-      .then(({ data }) => {
-        if (!data) return;
-        setProfileId(data.profile?.id);
+    fetch(`/api/admin/members/${memberId}`)
+      .then((r) => r.json())
+      .then(({ member }) => {
+        if (!member) return;
+        setProfileId(member.profile_id);
         setForm({
-          first_name:      data.profile?.first_name || '',
-          last_name:       data.profile?.last_name  || '',
-          phone:           data.profile?.phone      || '',
-          dob:             data.date_of_birth        || '',
-          gender:          data.gender               || '',
-          address:         data.address              || '',
-          emergency_name:  data.emergency_name       || '',
-          emergency_phone: data.emergency_phone      || '',
+          first_name:      member.profile?.first_name || '',
+          last_name:       member.profile?.last_name  || '',
+          phone:           member.profile?.phone      || '',
+          dob:             member.date_of_birth        || '',
+          gender:          member.gender               || '',
+          address:         member.address              || '',
+          emergency_name:  member.emergency_name       || '',
+          emergency_phone: member.emergency_phone      || '',
         });
         setLoading(false);
       });
@@ -61,21 +56,21 @@ export default function EditMemberForm({ memberId }) {
 
     setSaving(true);
     try {
-      await Promise.all([
-        supabase.from('profiles').update({
-          first_name: form.first_name.trim(),
-          last_name:  form.last_name.trim(),
-          phone:      form.phone.trim() || null,
-        }).eq('id', profileId),
-
-        supabase.from('members').update({
-          date_of_birth:   form.dob             || null,
-          gender:          form.gender           || null,
-          address:         form.address          || null,
-          emergency_name:  form.emergency_name   || null,
-          emergency_phone: form.emergency_phone  || null,
-        }).eq('id', memberId),
-      ]);
+      const res = await fetch(`/api/admin/members/${memberId}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          first_name:      form.first_name.trim(),
+          last_name:       form.last_name.trim() || null,
+          phone:           form.phone.trim() || null,
+          dob:             form.dob || null,
+          gender:          form.gender || null,
+          address:         form.address || null,
+          emergency_name:  form.emergency_name || null,
+          emergency_phone: form.emergency_phone || null,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Failed to save');
 
       router.push(`/admin/members/${memberId}`);
     } catch (err) {

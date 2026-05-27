@@ -1,14 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { User, CreditCard, CheckCircle2, ChevronRight, ChevronLeft, Upload, X, ArrowLeft, Users } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import Input from '@/components/ui/Input';
 import Select from '@/components/ui/Select';
 import Button from '@/components/ui/Button';
 import { memberStep1Schema, memberStep2Schema, flattenZodErrors } from '@/lib/schemas/member';
-import { formatCurrency } from '@/utils/format';
+import { formatCurrency } from '@/lib/utils/format';
 
 // ── Step indicator ───────────────────────────────────────────
 function StepBar({ current }) {
@@ -348,10 +347,10 @@ function Step3({ data, plans }) {
         <CheckCircle2 size={18} style={{ color: 'var(--if-accent)', flexShrink: 0, marginTop: 1 }} />
         <div>
           <p style={{ fontFamily: "'Outfit', sans-serif", fontSize: 13, fontWeight: 600, color: 'var(--if-accent)' }}>
-            Invite + Receipt emails will be sent
+            Invite email will be sent
           </p>
           <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: 'var(--if-text2)', marginTop: 2 }}>
-            Welcome email with password setup link + payment receipt will be sent to <strong>{data.email}</strong>
+            A "Welcome to IronForge" email with a password setup link will be sent to <strong>{data.email}</strong>
           </p>
         </div>
       </div>
@@ -371,57 +370,70 @@ const INITIAL = {
 };
 
 export default function CreateMemberForm() {
-  const router   = useRouter();
-  const supabase = createClient();
-
+  const router       = useRouter();
+  const searchParams = useSearchParams();
   const [step,    setStep]    = useState(1);
   const [data,    setData]    = useState(INITIAL);
   const [errors,  setErrors]  = useState({});
   const [plans,   setPlans]   = useState([]);
-  const [loading,    setLoading]    = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [fromLead,   setFromLead]   = useState(false);
-  const [leads,      setLeads]      = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [submitting,   setSubmitting]   = useState(false);
+  const [fromLead,     setFromLead]     = useState(false);
+  const [leads,        setLeads]        = useState([]);
   const [selectedLead, setSelectedLead] = useState('');
 
   // Fetch plans
   useEffect(() => {
-    supabase
-      .from('membership_plans')
-      .select('id, billing_cycle, price, description')
-      .eq('is_active', true)
-      .then(({ data }) => setPlans(data || []));
+    fetch('/api/admin/settings/plans')
+      .then((r) => r.json())
+      .then(({ plans }) => setPlans((plans || []).filter((p) => p.is_active)));
   }, []);
 
-  // Fetch converted leads that don't have a member yet
+  // Fetch leads available for conversion
   useEffect(() => {
-    supabase
-      .from('leads')
-      .select('id, first_name, last_name, email, phone, date_of_birth, interested_plan_id, emergency_name, emergency_phone')
-      .eq('status', 'converted')
-      .is('converted_member_id', null)
-      .then(({ data }) => setLeads(data || []));
+    fetch('/api/admin/leads?showAll=true&page=1')
+      .then((r) => r.json())
+      .then(({ leads }) => {
+        const active = (leads || []).filter((l) => l.status === 'new' || l.status === 'contacted' || l.status === 'interested');
+        setLeads(active);
+
+        // Auto-select if from_lead param present
+        const fromLeadId = searchParams.get('from_lead');
+        if (fromLeadId) {
+          setFromLead(true);
+          setSelectedLead(fromLeadId);
+          const lead = active.find((l) => l.id === fromLeadId);
+          if (lead) {
+            setData((prev) => ({
+              ...prev,
+              first_name:      lead.first_name      || '',
+              last_name:       lead.last_name        || '',
+              email:           lead.email            || '',
+              phone:           lead.phone            || '',
+              dob:             lead.date_of_birth    || '',
+              emergency_name:  lead.emergency_name   || '',
+              emergency_phone: lead.emergency_phone  || '',
+            }));
+          }
+        }
+      });
   }, []);
 
-  // When lead is selected — autofill form
+  // When lead selected — autofill form
   function handleLeadSelect(leadId) {
     setSelectedLead(leadId);
-    if (!leadId) {
-      setData(INITIAL);
-      return;
-    }
+    if (!leadId) { setData(INITIAL); return; }
     const lead = leads.find((l) => l.id === leadId);
     if (!lead) return;
     setData((prev) => ({
       ...prev,
-      first_name: lead.first_name    || '',
-      last_name:  lead.last_name     || '',
-      email:      lead.email         || '',
-      phone:      lead.phone         || '',
-      dob:     lead.date_of_birth    || '',
-      plan_id:         lead.interested_plan_id || '',
-      emergency_name:  lead.emergency_name      || '',
-      emergency_phone: lead.emergency_phone     || '',
+      first_name:      lead.first_name      || '',
+      last_name:       lead.last_name        || '',
+      email:           lead.email            || '',
+      phone:           lead.phone            || '',
+      dob:             lead.date_of_birth    || '',
+      emergency_name:  lead.emergency_name   || '',
+      emergency_phone: lead.emergency_phone  || '',
     }));
   }
 
@@ -453,158 +465,66 @@ export default function CreateMemberForm() {
   async function handleSubmit() {
     setSubmitting(true);
     try {
-      // 1. Get current admin's branch_id
-      const { data: { user } } = await supabase.auth.getUser();
-      const { data: profile }  = await supabase
-        .from('profiles')
-        .select('branch_id')
-        .eq('id', user.id)
-        .single();
-
-      const branchId = profile.branch_id;
-
-      // 2. Invite user via Supabase Auth
-      const { data: inviteData, error: inviteError } = await supabase.auth.admin
-        ? await supabase.auth.admin.inviteUserByEmail(data.email, {
-            data: { role: 'member' },
-            redirectTo: `${window.location.origin}/auth/callback`,
-          })
-        : { data: null, error: { message: 'Admin client not available' } };
-
-      // Fallback: use signUp if admin.inviteUserByEmail unavailable
-      let authUserId;
-
-      if (inviteError) {
-        // Use service role via API route
-        const res = await fetch('/api/admin/invite-member', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: data.email, firstName: data.first_name }),
-        });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Failed to invite user');
-        authUserId = json.userId;
-      } else {
-        authUserId = inviteData?.user?.id;
-      }
-
-      if (!authUserId) throw new Error('Failed to create auth user');
-
-      // 3. Create profile
-      const { error: profileError } = await supabase.from('profiles').insert({
-        id:         authUserId,
-        branch_id:  branchId,
-        role:       'member',
-        first_name: data.first_name.trim(),
-        last_name:  data.last_name.trim(),
-        email:      data.email.trim().toLowerCase(),
-        phone:      data.phone.trim() || null,
+      // 1. Invite via Clerk
+      const inviteRes = await fetch('/api/admin/invite-member', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: data.email, firstName: data.first_name }),
       });
-      if (profileError) throw profileError;
+      const inviteJson = await inviteRes.json();
+      if (!inviteRes.ok) throw new Error(inviteJson.error || 'Failed to invite user');
+      const clerkInviteId = inviteJson.invitationId;
+      if (!clerkInviteId) throw new Error('Failed to create invitation');
 
-      // 4. Generate member number
-      const { count } = await supabase
-        .from('members')
-        .select('*', { count: 'exact', head: true });
-      const memberNumber = `IGF-${String((count || 0) + 1).padStart(5, '0')}`;
-
-      // 5. Upload profile photo if provided
+      // 2. Upload profile photo if provided (Supabase Storage — kept)
       let profilePicUrl = null;
       if (data.photo) {
-        const ext  = data.photo.name.split('.').pop();
-        const path = `members/${authUserId}.${ext}`;
-        const { error: uploadError } = await supabase.storage
-          .from('avatars')
-          .upload(path, data.photo, { upsert: true, contentType: data.photo.type });
-
-        if (!uploadError) {
-          const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path);
-          profilePicUrl = urlData.publicUrl;
+        const formData = new FormData();
+          formData.append('file', data.photo);
+          const uploadRes  = await fetch(`/api/upload?type=member&id=${clerkInviteId}`, { method: 'POST', body: formData });
+          const uploadJson = await uploadRes.json();
+          if (uploadRes.ok) profilePicUrl = uploadJson.url;
         }
+
+      // 3. Create member via Drizzle API
+      const createRes = await fetch('/api/admin/members', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          first_name: data.first_name, last_name: data.last_name || null,
+          email: data.email, phone: data.phone || null,
+          dob: data.dob || null, gender: data.gender || null,
+          address: data.address || null,
+          emergency_name: data.emergency_name || null,
+          emergency_phone: data.emergency_phone || null,
+          profile_pic_url: profilePicUrl,
+          plan_id: data.plan_id, start_date: data.start_date,
+          amount_paid: Number(data.amount_paid),
+          payment_method: data.payment_method,
+          reference_no: data.reference_no || null,
+          notes: data.notes || null,
+          lead_id: selectedLead || null,
+          clerk_invite_id: clerkInviteId,
+        }),
+      });
+      const createJson = await createRes.json();
+      if (!createRes.ok) throw new Error(createJson.error || 'Failed to create member');
+
+      // 4. Send receipt email
+      if (createJson.paymentId) {
+        await fetch('/api/admin/receipt', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payment_id: createJson.paymentId, type: 'new' }),
+        }).catch(() => {});
       }
 
-      // 6. Create member record
-      const { data: member, error: memberError } = await supabase.from('members').insert({
-        profile_id:      authUserId,
-        branch_id:       branchId,
-        member_number:   memberNumber,
-        profile_pic_url: profilePicUrl,
-        date_of_birth:   data.dob || null,
-        gender:          data.gender || null,
-        address:         data.address || null,
-        emergency_name:  data.emergency_name || null,
-        emergency_phone: data.emergency_phone || null,
-      }).select('id').single();
-      if (memberError) throw memberError;
-
-      // 7. Calculate end date based on plan
-      const plan = plans.find((p) => p.id === data.plan_id);
-      const start = new Date(data.start_date);
-      const end   = new Date(start);
-      if      (plan?.billing_cycle === 'monthly')  end.setMonth(end.getMonth() + 1);
-      else if (plan?.billing_cycle === 'yearly')   end.setFullYear(end.getFullYear() + 1);
-      else if (plan?.billing_cycle === 'weekly')   end.setDate(end.getDate() + 7);
-      else end.setDate(end.getDate() + 1); // day_pass
-
-      // 8. Create subscription
-      const { data: sub, error: subError } = await supabase.from('member_subscriptions').insert({
-        member_id:  member.id,
-        plan_id:    data.plan_id,
-        branch_id:  branchId,
-        start_date: data.start_date,
-        end_date:   end.toISOString().split('T')[0],
-        status:     'active',
-        renewed_by: user.id,
-        notes:      data.notes || null,
-      }).select('id').single();
-      if (subError) throw subError;
-
-      // 9. Record payment
-      await supabase.from('payments').insert({
-        member_id:       member.id,
-        subscription_id: sub.id,
-        branch_id:       branchId,
-        amount:          Number(data.amount_paid),
-        payment_method:  data.payment_method,
-        reference_no:    data.reference_no || null,
-        recorded_by:     user.id,
-        notes:           data.notes || null,
-      });
-
-      // 10. Send receipt email
-      try {
-        const { data: paymentRow } = await supabase
-          .from('payments')
-          .select('id')
-          .eq('member_id', member.id)
-          .eq('subscription_id', sub.id)
-          .single();
-        if (paymentRow?.id) {
-          await fetch('/api/admin/receipt', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ payment_id: paymentRow.id, type: 'new' }),
-          });
-        }
-      } catch (e) { console.error('Receipt email:', e?.message); }
-
-      // 11. Audit log
-      await supabase.from('audit_logs').insert({
-        branch_id:  branchId,
-        profile_id: user.id,
-        action:     'MEMBER_CREATED',
-        entity:     'members',
-        entity_id:  member.id,
-        new_value:  { member_number: memberNumber, email: data.email },
-      });
-
-      // 12. If from lead — delete lead from DB (converted leads are removed)
+      // 5. Delete lead if converted
       if (selectedLead) {
-        await supabase.from('lead_followups').delete().eq('lead_id', selectedLead);
-        await supabase.from('leads').delete().eq('id', selectedLead);
+        await fetch(`/api/admin/leads/${selectedLead}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'delete' }),
+        }).catch(() => {});
       }
 
-      router.push(`/admin/members/${member.id}?created=true`);
+      router.push(`/admin/members/${createJson.memberId}?created=true`);
 
     } catch (err) {
       console.error('Create member error:', err);
@@ -645,7 +565,7 @@ export default function CreateMemberForm() {
             </div>
             <div>
               <p style={{ fontFamily: "'Outfit', sans-serif", fontSize: 13, fontWeight: 600, color: 'var(--if-text)' }}>Convert from Lead</p>
-              <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11, color: 'var(--if-muted)' }}>Auto-fill details from a converted lead</p>
+              <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11, color: 'var(--if-muted)' }}>Auto-fill details from an existing lead</p>
             </div>
           </div>
           <button onClick={() => { setFromLead((p) => !p); setSelectedLead(''); setData(INITIAL); }}
@@ -654,30 +574,27 @@ export default function CreateMemberForm() {
             <div style={{ position: 'absolute', top: 3, left: fromLead ? 22 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left .2s', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />
           </button>
         </div>
-
         {fromLead && (
           <div>
             {leads.length === 0 ? (
               <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: 'var(--if-muted)', padding: '8px 0' }}>
-                No converted leads available. Convert a lead from CRM first.
+                No active leads found. Add leads from CRM first.
               </p>
             ) : (
-              <select
-                value={selectedLead}
-                onChange={(e) => handleLeadSelect(e.target.value)}
+              <select value={selectedLead} onChange={(e) => handleLeadSelect(e.target.value)}
                 style={{ width: '100%', height: 40, background: 'var(--if-bg3)', border: '1px solid var(--if-border2)', borderRadius: 8, padding: '0 12px', fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: 'var(--if-text)', outline: 'none', appearance: 'none', cursor: 'pointer' }}
               >
                 <option value=''>Select a lead...</option>
                 {leads.map((l) => (
                   <option key={l.id} value={l.id}>
-                    {`${l.first_name} ${l.last_name || ''}`.trim()} {`${l.phone ? '— ' + l.phone : ''}`}
+                    {`${l.first_name} ${l.last_name || ''}`.trim()} {l.phone ? `— ${l.phone}` : ''}
                   </option>
                 ))}
               </select>
             )}
             {selectedLead && (
               <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: '#22c55e', marginTop: 8 }}>
-                ✓ Lead details auto-filled below. Review and complete remaining fields.
+                ✓ Lead details auto-filled. Complete remaining fields.
               </p>
             )}
           </div>

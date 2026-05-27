@@ -1,6 +1,6 @@
 'use client';
 
-import { formatCurrency } from '@/utils/format';
+import { formatCurrency } from '@/lib/utils/format';
 const MONTHS = ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'];
 
 export default function RevenueChart({ data = [], currentMonth = 'Mar', total = formatCurrency(0) }) {
@@ -18,7 +18,7 @@ export default function RevenueChart({ data = [], currentMonth = 'Mar', total = 
       {/* Header */}
       <div
         className="flex items-center justify-between px-5 py-3.5"
-        style={{ borderBottom: '1px solid var(--if-border)' }}
+        style={{ borderBottom: '1px solid var(--if-border)', padding: '0.5rem' }}
       >
         <div className="flex items-center gap-2">
           <div
@@ -44,6 +44,7 @@ export default function RevenueChart({ data = [], currentMonth = 'Mar', total = 
             fontFamily: "'Outfit', sans-serif",
             background: 'rgba(34,211,160,0.09)',
             color:      'var(--if-green, #22d3a0)',
+            padding:    '4px 8px',
           }}
         >
           ↑ 8.4% vs last
@@ -51,7 +52,7 @@ export default function RevenueChart({ data = [], currentMonth = 'Mar', total = 
       </div>
 
       {/* Chart body */}
-      <div className="px-5 pt-4 pb-5">
+      <div className="px-5 pt-4 pb-5" style={{padding: '0.5rem 1rem'}}>
         {/* Total */}
         <p
           className="mb-1 leading-none"

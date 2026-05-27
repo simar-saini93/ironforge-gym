@@ -1,9 +1,8 @@
 'use client';
 
-import { formatCurrency } from '@/utils/format';
+import { formatCurrency } from '@/lib/utils/format';
 import { useEffect, useState } from 'react';
 import { Users, Banknote, AlertTriangle, Target, UserPlus } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import AdminShell from '@/components/admin/layout/AdminShell';
 import StatCard from '@/components/admin/dashboard/StatCard';
 import RevenueChart from '@/components/admin/dashboard/RevenueChart';
@@ -56,151 +55,23 @@ function Skeleton({ h = 120, radius = 12 }) {
   );
 }
 
-// ── Dashboard data fetching ──────────────────────────────────
-async function fetchDashboardData(supabase) {
-  const today = new Date().toISOString().split('T')[0];
-  const in7   = new Date(Date.now() + 7  * 864e5).toISOString().split('T')[0];
-  const in30  = new Date(Date.now() + 30 * 864e5).toISOString().split('T')[0];
-
-  const [
-    { count: activeMembers },
-    { data: expiring },
-    { count: newLeads },
-    { data: recentAccess },
-    { data: trainers },
-    { data: payments },
-  ] = await Promise.all([
-    // Active members count
-    supabase
-      .from('members')
-      .select('*', { count: 'exact', head: true })
-      .eq('is_active', true),
-
-    // Expiring in 30 days
-    supabase
-      .from('member_subscriptions')
-      .select(`
-        id, end_date, status,
-        plan:membership_plans(billing_cycle),
-        member:members(id, profile:profiles(first_name, last_name))
-      `)
-      .eq('status', 'active')
-      .gte('end_date', today)
-      .lte('end_date', in30)
-      .order('end_date', { ascending: true })
-      .limit(8),
-
-    // New leads — status never changed (still 'new')
-    supabase
-      .from('leads')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'new'),
-
-    // Recent access logs
-    supabase
-      .from('access_logs')
-      .select(`
-        id, method, status, accessed_at,
-        member:members(profile:profiles(first_name, last_name))
-      `)
-      .order('accessed_at', { ascending: false })
-      .limit(8),
-
-    // Trainers with attendance
-    supabase
-      .from('trainers')
-      .select(`
-        id,
-        profile:profiles(first_name, last_name),
-        attendance:trainer_attendance(status, date)
-      `)
-      .eq('is_active', true)
-      .limit(5),
-
-    // Payments this month for revenue
-    supabase
-      .from('payments')
-      .select('amount, payment_date')
-      .gte('payment_date', new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()),
-  ]);
-
-  // ── Format expiring members ──
-  const expiringFormatted = (expiring || []).map((s) => {
-    const daysLeft = Math.ceil(
-      (new Date(s.end_date) - new Date()) / 864e5
-    );
-    const name =
-      `${s.member?.profile?.first_name || ''} ${s.member?.profile?.last_name || ''}`.trim() || 'Unknown';
-
-    return {
-      id:       s.id,
-      name,
-      plan:     s.plan?.billing_cycle?.replace('_', ' ') || 'Plan',
-      date:     new Date(s.end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
-      daysLeft,
-    };
-  });
-
-  // ── Format activity feed ──
-  const activityFormatted = (recentAccess || []).map((a) => {
-    const name = `${a.member?.profile?.first_name || ''} ${a.member?.profile?.last_name || ''}`.trim() || 'Unknown';
-    const time = new Date(a.accessed_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    const isGranted = a.status === 'granted';
-
-    return {
-      id:      a.id,
-      type:    isGranted ? 'access_granted' : 'access_denied',
-      message: isGranted
-        ? `<strong style="color:var(--if-text)">${name}</strong> entered via ${a.method === 'qr' ? 'QR scan' : '4-digit code'}`
-        : `<strong style="color:var(--if-text)">${name}</strong> access denied — ${a.method}`,
-      time,
-    };
-  });
-
-  // ── Format trainers ──
-  const trainersFormatted = (trainers || []).map((t) => {
-    const name = `${t.profile?.first_name || ''} ${t.profile?.last_name || ''}`.trim();
-    const thisWeek = (t.attendance || []).filter((a) => {
-      const d = new Date(a.date);
-      const now = new Date();
-      const weekAgo = new Date(now - 7 * 864e5);
-      return d >= weekAgo && d <= now;
-    });
-    const present = thisWeek.filter((a) => a.status === 'present').length;
-    const todayAtt = (t.attendance || []).find((a) => a.date === today);
-
-    return {
-      id:          t.id,
-      name,
-      todayStatus: todayAtt?.status || 'absent',
-      present,
-      total:       5,
-    };
-  });
-
-  // ── Revenue total ──
-  const revenue = (payments || []).reduce((sum, p) => sum + Number(p.amount), 0);
-  const revenueFormatted = formatCurrency(revenue);
-
-  return {
-    activeMembers: activeMembers || 0,
-    expiring:      expiringFormatted,
-    newLeads:      newLeads || 0,
-    activity:      activityFormatted,
-    trainers:      trainersFormatted,
-    revenue:       revenueFormatted,
-  };
-}
-
 // ── Main component ───────────────────────────────────────────
 export default function DashboardView() {
-  const supabase = createClient();
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchDashboardData(supabase)
-      .then(setData)
+    fetch('/api/admin/dashboard')
+      .then((r) => {
+        if (!r.ok) throw new Error('Failed to load dashboard');
+        return r.json();
+      })
+      .then((json) => {
+        setData({
+          ...json,
+          revenue: formatCurrency(json.revenue ?? 0),
+        });
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);

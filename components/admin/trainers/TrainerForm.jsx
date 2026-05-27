@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Save, ArrowLeft, CheckCircle2 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import { PageSpinner } from '@/components/ui/Spinner';
@@ -13,8 +12,6 @@ import { memberInviteTemplate } from '@/lib/email/templates';
 export default function TrainerForm({ trainerId }) {
   const isEdit   = !!trainerId;
   const router   = useRouter();
-  const supabase = createClient();
-
   const [loading,   setLoading]   = useState(isEdit);
   const [saving,    setSaving]    = useState(false);
   const [errors,    setErrors]    = useState({});
@@ -26,22 +23,18 @@ export default function TrainerForm({ trainerId }) {
 
   useEffect(() => {
     if (!isEdit) return;
-    supabase
-      .from('trainers')
-      .select('hire_date, specialization, bio, profile:profiles(id, first_name, last_name, email, phone)')
-      .eq('id', trainerId)
-      .single()
-      .then(({ data }) => {
-        if (!data) return;
-        setProfileId(data.profile?.id);
+    fetch(`/api/admin/trainers/${trainerId}`)
+      .then((r) => r.json())
+      .then(({ trainer }) => {
+        if (!trainer) return;
+        setProfileId(trainer.profile_id || trainerId);
         setForm({
-          first_name:     data.profile?.first_name || '',
-          last_name:      data.profile?.last_name  || '',
-          email:          data.profile?.email      || '',
-          phone:          data.profile?.phone      || '',
-          specialization: data.specialization       || '',
-          bio:            data.bio                  || '',
-          
+          first_name:     trainer.profile?.first_name || '',
+          last_name:      trainer.profile?.last_name  || '',
+          email:          trainer.profile?.email      || '',
+          phone:          trainer.profile?.phone      || '',
+          specialization: trainer.specialization       || '',
+          bio:            trainer.bio                  || '',
         });
         setLoading(false);
       });
@@ -60,43 +53,34 @@ export default function TrainerForm({ trainerId }) {
 
     setSaving(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { data: adminProfile } = await supabase.from('profiles').select('branch_id').eq('id', user.id).single();
-      const branchId = adminProfile.branch_id;
-
       if (isEdit) {
-        // Update existing
-        await Promise.all([
-          supabase.from('profiles').update({ first_name: form.first_name.trim(), last_name: form.last_name.trim(), phone: form.phone || null }).eq('id', profileId),
-          supabase.from('trainers').update({ specialization: form.specialization || null, bio: form.bio || null, hire_date: form.hire_date || null }).eq('id', trainerId),
-        ]);
+        const res = await fetch(`/api/admin/trainers/${trainerId}`, {
+          method:  'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            first_name:     form.first_name.trim(),
+            last_name:      form.last_name.trim(),
+            phone:          form.phone || null,
+            specialization: form.specialization || null,
+            bio:            form.bio || null,
+          }),
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Failed to update trainer');
         router.push(`/admin/trainers/${trainerId}`);
       } else {
-        // Create new trainer via API
-        const res = await fetch('/api/admin/invite-member', {
-          method: 'POST',
+        const res = await fetch('/api/admin/trainers', {
+          method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: form.email, firstName: form.first_name, role: 'trainer' }),
+          body:    JSON.stringify({
+            email:          form.email.trim().toLowerCase(),
+            first_name:     form.first_name.trim(),
+            last_name:      form.last_name.trim(),
+            phone:          form.phone || null,
+            specialization: form.specialization || null,
+            bio:            form.bio || null,
+          }),
         });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Failed to create user');
-
-        const authUserId = json.userId;
-
-        await supabase.from('profiles').insert({
-          id: authUserId, branch_id: branchId, role: 'trainer',
-          first_name: form.first_name.trim(), last_name: form.last_name.trim(),
-          email: form.email.trim().toLowerCase(), phone: form.phone || null,
-        });
-
-        await supabase.from('trainers').insert({
-          profile_id: authUserId, branch_id: branchId,
-          specialization: form.specialization || null,
-          bio: form.bio || null,
-          
-          is_active: true,
-        });
-
+        if (!res.ok) throw new Error((await res.json()).error || 'Failed to create trainer');
         router.push('/admin/trainers');
       }
     } catch (err) {

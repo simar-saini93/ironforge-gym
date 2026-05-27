@@ -2,14 +2,13 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Plus, Trash2, Check, Clock, ChevronLeft,
-  ChevronRight, RefreshCw, Calendar, Repeat,
+  Plus, Trash2, Check, Clock,
+  Calendar, Repeat, AlertTriangle, Pencil,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 
-const DAYS_S   = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DAYS_S    = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAYS_FULL = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
 
 const S = {
@@ -19,85 +18,104 @@ const S = {
   text:     'var(--if-text)',   text2:    'var(--if-text2)',   muted: 'var(--if-muted)',
   red:      'var(--if-red)',    redbg:    'rgba(239,68,68,0.09)',
   green:    '#22c55e',          greenbg:  'rgba(34,197,94,0.09)',
-  orange:   '#f97316',          purple:   '#a78bfa',
+  orange:   '#f97316',          orangebg: 'rgba(249,115,22,0.09)',
 };
 
-function fmtDate(d) { return d.toISOString().split('T')[0]; }
-function fmtDisplay(dateStr) {
-  return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+// ── UTC-safe date helpers ─────────────────────────────────────
+// All date operations use UTC to avoid timezone shift bugs
+// (e.g. India IST+5:30 would shift Mon→Sun for UTC midnight)
+
+function fmtDate(d) {
+  // Format a Date object as YYYY-MM-DD using UTC
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
 }
+
+function todayUTC() {
+  // Get today's date as YYYY-MM-DD in UTC
+  return fmtDate(new Date());
+}
+
+function fmtDisplay(dateStr) {
+  // Display a date string — parse as UTC to avoid day shift
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.toLocaleDateString('en-IN', {
+    weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
 function fmtTime(t) {
   if (!t) return '';
   const [h, m] = t.split(':');
   const hr = parseInt(h);
   return `${hr === 0 ? 12 : hr > 12 ? hr - 12 : hr}:${m} ${hr >= 12 ? 'PM' : 'AM'}`;
 }
+
 function initials(name) { return name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2); }
 function trainerName(t) { return `${t.profile?.first_name || ''} ${t.profile?.last_name || ''}`.trim(); }
 
-// Generate all dates in range matching days of week
+// ── UTC-safe day name from date string ───────────────────────
+function getDayNameUTC(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return DAYS_FULL[date.getUTCDay()];
+}
+
+// ── UTC-safe day index from date string ──────────────────────
+function getDayIndexUTC(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+// ── Generate all dates in range matching days of week (UTC) ──
 function generateDates(startDate, endDate, daysOfWeek) {
   const dates = [];
-  const cur   = new Date(startDate + 'T00:00:00');
-  const end   = new Date(endDate   + 'T00:00:00');
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const [ey, em, ed] = endDate.split('-').map(Number);
+  const cur = new Date(Date.UTC(sy, sm - 1, sd));
+  const end = new Date(Date.UTC(ey, em - 1, ed));
+
   while (cur <= end) {
-    const dayName = DAYS_FULL[cur.getDay()];
+    const dayName = DAYS_FULL[cur.getUTCDay()]; // ← UTC day, not local
     if (daysOfWeek.includes(dayName)) dates.push(fmtDate(cur));
-    cur.setDate(cur.getDate() + 1);
+    cur.setUTCDate(cur.getUTCDate() + 1);       // ← UTC increment
   }
   return dates;
 }
 
-// ── Check if date is disabled ────────────────────────────────
+// ── Check if date is disabled (UTC-safe) ─────────────────────
 function isDateDisabled(dateStr, weeklyOffs, holidays) {
-  const d       = new Date(dateStr + 'T00:00:00');
-  const dayName = d.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+  const dayName = getDayNameUTC(dateStr);
   return (weeklyOffs || []).includes(dayName) || (holidays || []).includes(dateStr);
 }
 
-// ── Trainer avatar pill ───────────────────────────────────────
-function TrainerPill({ name, color = S.accent, bg = S.accentbg2, onRemove }) {
-  const ini = initials(name);
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px 4px 4px', background: bg, border: `1px solid ${color}`, borderRadius: 20 }}>
-      <div style={{ width: 22, height: 22, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Outfit', sans-serif", fontSize: 9, fontWeight: 700, color: '#000', flexShrink: 0 }}>
-        {ini}
-      </div>
-      <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, fontWeight: 600, color: S.text, whiteSpace: 'nowrap' }}>{name}</span>
-      {onRemove && (
-        <button onClick={onRemove} style={{ background: 'none', border: 'none', cursor: 'pointer', color: S.muted, display: 'flex', padding: 0, marginLeft: 2 }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = S.red)}
-          onMouseLeave={(e) => (e.currentTarget.style.color = S.muted)}
-        >
-          <Trash2 size={11} />
-        </button>
-      )}
-    </div>
-  );
-}
-
 export default function DutyTab({ trainers = [] }) {
-  const supabase = createClient();
-  const today    = new Date();
+  const todayStr = todayUTC();
 
-  const [selectedDate,  setSelectedDate]  = useState(fmtDate(today));
-  const [duty,          setDuty]          = useState([]);
-  const [patterns,      setPatterns]      = useState([]);
-  const [loading,       setLoading]       = useState(true);
-  const [assignOpen,    setAssignOpen]    = useState(false);
-  const [view,          setView]          = useState('day'); // 'day' | 'recurring'
-  const [removing,      setRemoving]      = useState(null);
-  const [deletingPat,   setDeletingPat]   = useState(null);
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+  const [duty,         setDuty]         = useState([]);
+  const [patterns,     setPatterns]     = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [assignOpen,   setAssignOpen]   = useState(false);
+  const [view,         setView]         = useState('day');
+  const [removing,     setRemoving]     = useState(null);
+  const [deletingPat,  setDeletingPat]  = useState(null);
   const [settings,     setSettings]     = useState(null);
   const [holidays,     setHolidays]     = useState([]);
+  const [branchId,     setBranchId]     = useState(null);
+  const [conflicts,    setConflicts]    = useState([]);
+  const [editingPat,   setEditingPat]   = useState(null); // pattern being edited
 
-  // ── Assign modal form ────────────────────────────────────
   const defaultForm = {
     trainer_id:   '',
-    mode:         'onetime',    // 'onetime' | 'recurring'
-    date:         fmtDate(today),
-    days_of_week: [],
-    start_date:   fmtDate(today),
+    mode:         'onetime',
+    date:         todayStr,
+    days_of_week: ['monday','tuesday','wednesday','thursday','friday'],
+    start_date:   todayStr,
     end_date:     fmtDate(new Date(Date.now() + 30 * 864e5)),
     is_full_day:  true,
     shift_start:  '06:00',
@@ -107,178 +125,165 @@ export default function DutyTab({ trainers = [] }) {
   const [saving,  setSaving]  = useState(false);
   const [preview, setPreview] = useState([]);
 
-  // ── Fetch ─────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const { data: branch } = await supabase.from('branches').select('id').limit(1).single();
-      if (!branch) { setLoading(false); return; }
-
-      const [{ data: dutyRows }, { data: patternRows }, { data: settingsRow }, { data: holidayRows }] = await Promise.all([
-        supabase.from('trainer_duty')
-          .select('id, date, trainer_id, is_full_day, shift_start, shift_end, trainer:trainers(id, profile:profiles(first_name, last_name))')
-          .eq('branch_id', branch.id)
-          .gte('date', fmtDate(today))
-          .order('date', { ascending: true }),
-
-        supabase.from('trainer_duty_patterns')
-          .select('*, trainer:trainers(id, profile:profiles(first_name, last_name))')
-          .eq('branch_id', branch.id)
-          .gte('end_date', fmtDate(today))
-          .order('created_at', { ascending: false }),
-
-        supabase.from('gym_schedule_settings').select('weekly_off_days').eq('branch_id', branch.id).maybeSingle(),
-
-        supabase.from('gym_holidays').select('date').eq('branch_id', branch.id).gte('date', fmtDate(today)).is('cancelled_at', null),
-      ]);
-
-      setDuty(dutyRows || []);
-      setPatterns(patternRows || []);
-      setSettings(settingsRow || null);
-      setHolidays((holidayRows || []).map((h) => h.date));
+      const res  = await fetch('/api/admin/duty');
+      if (!res.ok) throw new Error('Failed to fetch duty data');
+      const json = await res.json();
+      setBranchId(json.branchId);
+      setDuty(json.duty       || []);
+      setPatterns(json.patterns || []);
+      setSettings(json.settings || null);
+      setHolidays(json.holidays || []);
     } catch (err) { console.error('DutyTab fetch error:', err?.message); }
     finally { setLoading(false); }
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // ── Preview dates ─────────────────────────────────────
+  // ── Preview + conflict detection ──────────────────────────
   useEffect(() => {
     if (form.mode === 'recurring' && form.days_of_week.length > 0 && form.start_date && form.end_date) {
-      setPreview(generateDates(form.start_date, form.end_date, form.days_of_week).slice(0, 10));
+      const allDates = generateDates(form.start_date, form.end_date, form.days_of_week);
+      setPreview(allDates.slice(0, 10));
+      if (form.trainer_id) {
+        const trainerDates = new Set(duty.filter((d) => d.trainer_id === form.trainer_id).map((d) => d.date));
+        setConflicts(allDates.filter((d) => trainerDates.has(d)));
+      } else {
+        setConflicts([]);
+      }
+    } else if (form.mode === 'onetime' && form.trainer_id && form.date) {
+      const trainerDates = new Set(duty.filter((d) => d.trainer_id === form.trainer_id).map((d) => d.date));
+      setConflicts(trainerDates.has(form.date) ? [form.date] : []);
+      setPreview([]);
     } else {
       setPreview([]);
+      setConflicts([]);
     }
-  }, [form.mode, form.days_of_week, form.start_date, form.end_date]);
+  }, [form.mode, form.days_of_week, form.start_date, form.end_date, form.trainer_id, form.date, duty]);
 
-  // ── Day view data ─────────────────────────────────────
   const dayDuty = duty.filter((d) => d.date === selectedDate);
 
-  // ── Remove individual duty ────────────────────────────
   async function removeDuty(dutyId) {
     setRemoving(dutyId);
     try {
-      await supabase.from('trainer_duty').delete().eq('id', dutyId);
+      await fetch('/api/admin/duty', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'remove_duty', branchId, data: { id: dutyId } }),
+      });
       setDuty((p) => p.filter((d) => d.id !== dutyId));
     } catch (err) { alert(err?.message); }
     finally { setRemoving(null); }
   }
 
-  // ── Delete pattern + future generated entries ─────────
   async function deletePattern(pattern) {
-    if (!confirm(`Delete recurring assignment for ${trainerName(pattern.trainer)}?\n\nThis will also remove all future duty entries generated from this pattern.`)) return;
+    if (!confirm(`Delete recurring assignment for ${trainerName(pattern.trainer)}?\nThis will remove all future duty entries from this pattern.`)) return;
     setDeletingPat(pattern.id);
     try {
-      // Get all dates this pattern generated from today onwards
-      const futureDates = generateDates(fmtDate(today), pattern.end_date, pattern.days_of_week);
-
-      // Delete generated duty rows for this trainer on those dates
-      for (const date of futureDates) {
-        await supabase.from('trainer_duty')
-          .delete()
-          .eq('trainer_id', pattern.trainer_id)
-          .eq('date', date);
-      }
-
-      // Delete pattern
-      await supabase.from('trainer_duty_patterns').delete().eq('id', pattern.id);
+      const futureDates = generateDates(todayStr, pattern.end_date, pattern.days_of_week);
+      await fetch('/api/admin/duty', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete_pattern_dates', branchId, data: { trainer_id: pattern.trainer_id, dates: futureDates } }),
+      });
+      await fetch('/api/admin/duty', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete_pattern', branchId, data: { id: pattern.id } }),
+      });
       await fetchData();
     } catch (err) { alert(err?.message); }
     finally { setDeletingPat(null); }
   }
 
-  // ── Save assignment ───────────────────────────────────
+  // ── Edit pattern ─────────────────────────────────────────────
+  function startEditPattern(pattern) {
+    setEditingPat(pattern);
+    setForm({
+      trainer_id:   pattern.trainer_id,
+      mode:         'recurring',
+      date:         todayStr,
+      days_of_week: pattern.days_of_week,
+      start_date:   pattern.start_date >= todayStr ? pattern.start_date : todayStr,
+      end_date:     pattern.end_date,
+      is_full_day:  pattern.is_full_day,
+      shift_start:  pattern.shift_start || '06:00',
+      shift_end:    pattern.shift_end   || '22:00',
+    });
+    setConflicts([]);
+    setAssignOpen(true);
+  }
+
   async function handleSave() {
     if (!form.trainer_id) { alert('Please select a trainer'); return; }
     if (form.mode === 'recurring' && form.days_of_week.length === 0) { alert('Select at least one day of the week'); return; }
     setSaving(true);
-
     try {
-      const { data: branch } = await supabase.from('branches').select('id').limit(1).single();
-      const { data: { user } } = await supabase.auth.getUser();
-
-      const dutyBase = {
-        branch_id:   branch.id,
-        trainer_id:  form.trainer_id,
-        is_full_day: form.is_full_day,
-        shift_start: form.is_full_day ? null : form.shift_start,
-        shift_end:   form.is_full_day ? null : form.shift_end,
-      };
+      const shiftStart = form.is_full_day ? null : form.shift_start;
+      const shiftEnd   = form.is_full_day ? null : form.shift_end;
 
       if (form.mode === 'onetime') {
         if (isDateDisabled(form.date, settings?.weekly_off_days, holidays)) {
           alert('This date is a weekly off or holiday. Cannot assign trainer.');
-          setSaving(false);
-          return;
+          setSaving(false); return;
         }
-        // Single entry
-        await supabase.from('trainer_duty').upsert(
-          { ...dutyBase, date: form.date },
-          { onConflict: 'branch_id,trainer_id,date' }
-        );
-      } else {
-        // Save pattern
-        await supabase.from('trainer_duty_patterns').insert({
-          branch_id:    branch.id,
-          trainer_id:   form.trainer_id,
-          days_of_week: form.days_of_week,
-          start_date:   form.start_date,
-          end_date:     form.end_date,
-          is_full_day:  form.is_full_day,
-          shift_start:  form.is_full_day ? null : form.shift_start,
-          shift_end:    form.is_full_day ? null : form.shift_end,
-          created_by:   user.id,
+        await fetch('/api/admin/duty', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'add_duty', branchId, data: { trainer_id: form.trainer_id, date: form.date, is_full_day: form.is_full_day, shift_start: shiftStart, shift_end: shiftEnd } }),
         });
-
-        // Generate individual duty rows — skip weekly offs + holidays
-        const dates = generateDates(form.start_date, form.end_date, form.days_of_week)
-          .filter((d) => !isDateDisabled(d, settings?.weekly_off_days, holidays));
-
+      } else {
+        // Include all dates — admin can assign trainer even on holidays/off days
+        const dates = generateDates(form.start_date, form.end_date, form.days_of_week);
         if (dates.length === 0) {
-          alert('All selected dates fall on weekly off days or holidays. Please change your selection.');
-          setSaving(false);
-          return;
+          alert('No dates generated for this range and days selection.');
+          setSaving(false); return;
         }
 
-        const rows = dates.map((date) => ({ ...dutyBase, date }));
-
-        // Upsert in batches of 50
-        for (let i = 0; i < rows.length; i += 50) {
-          await supabase.from('trainer_duty').upsert(
-            rows.slice(i, i + 50),
-            { onConflict: 'branch_id,trainer_id,date' }
-          );
+        // If editing existing pattern — delete old future entries first
+        if (editingPat) {
+          const oldFutureDates = generateDates(todayStr, editingPat.end_date, editingPat.days_of_week);
+          await fetch('/api/admin/duty', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'delete_pattern_dates', branchId, data: { trainer_id: editingPat.trainer_id, dates: oldFutureDates } }),
+          });
+          await fetch('/api/admin/duty', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'delete_pattern', branchId, data: { id: editingPat.id } }),
+          });
         }
+
+        await fetch('/api/admin/duty', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'add_pattern', branchId, data: { trainer_id: form.trainer_id, days_of_week: form.days_of_week, start_date: form.start_date, end_date: form.end_date, is_full_day: form.is_full_day, shift_start: shiftStart, shift_end: shiftEnd, dates } }),
+        });
       }
-
       setAssignOpen(false);
       setForm(defaultForm);
+      setConflicts([]);
+      setEditingPat(null);
       await fetchData();
     } catch (err) { alert(err?.message || 'Failed to save assignment'); }
     finally { setSaving(false); }
   }
 
-  // ── Date navigation strip ─────────────────────────────
+  // ── 14-day date strip (UTC) ───────────────────────────────
   const dates = Array.from({ length: 14 }, (_, i) => {
-    const d = new Date(today);
-    d.setDate(d.getDate() + i);
+    const d = new Date(Date.now() + i * 864e5);
     return fmtDate(d);
   });
 
   const trainerById = Object.fromEntries((trainers || []).map((t) => [t.id, t]));
 
+  const totalPreviewDates = form.mode === 'recurring' && form.days_of_week.length > 0 && form.start_date && form.end_date
+    ? generateDates(form.start_date, form.end_date, form.days_of_week).length : 0;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* ── Header with view toggle ── */}
+      {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <div style={{ display: 'flex', gap: 4, background: S.card, border: `1px solid ${S.border}`, borderRadius: 10, padding: 4 }}>
-          {[
-            { id: 'day',       label: 'Day View',   icon: Calendar },
-            { id: 'recurring', label: 'Recurring',  icon: Repeat   },
-          ].map((v) => {
-            const Icon = v.icon;
-            const on   = view === v.id;
+          {[{ id: 'day', label: 'Day View', icon: Calendar }, { id: 'recurring', label: 'Recurring', icon: Repeat }].map((v) => {
+            const Icon = v.icon; const on = view === v.id;
             return (
               <button key={v.id} onClick={() => setView(v.id)}
                 style={{ display: 'flex', alignItems: 'center', gap: 5, height: 32, padding: '0 12px', borderRadius: 7, border: 'none', cursor: 'pointer', background: on ? S.accent : 'transparent', fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 600, color: on ? '#000' : S.text2, transition: 'all .15s' }}
@@ -288,39 +293,29 @@ export default function DutyTab({ trainers = [] }) {
             );
           })}
         </div>
-
-        <Button icon={<Plus size={14} />} onClick={() => { setForm(defaultForm); setAssignOpen(true); }}>
+        <Button icon={<Plus size={14} />} onClick={() => { setForm(defaultForm); setConflicts([]); setEditingPat(null); setAssignOpen(true); }}>
           Assign Trainer
         </Button>
       </div>
 
       {loading ? (
-        <div style={{ background: S.card, border: `1px solid ${S.border}`, borderRadius: 12, padding: '40px 0', textAlign: 'center', color: S.muted, fontFamily: "'DM Sans', sans-serif", fontSize: 13 }}>
-          Loading...
-        </div>
+        <div style={{ background: S.card, border: `1px solid ${S.border}`, borderRadius: 12, padding: '40px 0', textAlign: 'center', color: S.muted, fontFamily: "'DM Sans', sans-serif", fontSize: 13 }}>Loading...</div>
       ) : view === 'day' ? (
-
-        // ════════════════════════════════════════════════
-        // DAY VIEW
-        // ════════════════════════════════════════════════
         <>
           {/* Date strip */}
           <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
             {dates.map((date) => {
-              const d      = new Date(date + 'T00:00:00');
-              const isS      = date === selectedDate;
-            const isDisabled = isDateDisabled(date, settings?.weekly_off_days, holidays);
-              const count  = duty.filter((du) => du.date === date).length;
+              const isS        = date === selectedDate;
+              const isDisabled = isDateDisabled(date, settings?.weekly_off_days, holidays);
+              const dayIdx     = getDayIndexUTC(date);
+              const dayNum     = parseInt(date.split('-')[2]);
+              const count      = duty.filter((du) => du.date === date).length;
               return (
                 <button key={date} onClick={() => setSelectedDate(date)}
-                  style={{ minWidth: 54, height: 64, borderRadius: 10, border: `1px solid ${isDisabled ? S.red : isS ? S.accent : S.border2}`, background: isDisabled ? S.redbg : isS ? S.accentbg2 : S.card, cursor: isDisabled ? 'not-allowed' : 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, transition: 'all .15s', flexShrink: 0, opacity: isDisabled ? 0.6 : 1 }}
+                  style={{ minWidth: 54, height: 64, borderRadius: 10, border: `1px solid ${isDisabled ? S.red : isS ? S.accent : S.border2}`, background: isDisabled ? S.redbg : isS ? S.accentbg2 : S.card, cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, transition: 'all .15s', flexShrink: 0, opacity: isDisabled ? 0.7 : 1 }}
                 >
-                  <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 9, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: isS ? S.accent : S.muted }}>
-                    {DAYS_S[d.getDay()]}
-                  </span>
-                  <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 20, fontWeight: 800, color: isS ? S.accent : S.text, lineHeight: 1 }}>
-                    {d.getDate()}
-                  </span>
+                  <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 9, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: isS ? S.accent : S.muted }}>{DAYS_S[dayIdx]}</span>
+                  <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 20, fontWeight: 800, color: isS ? S.accent : S.text, lineHeight: 1 }}>{dayNum}</span>
                   {count > 0 && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
                       <div style={{ width: 5, height: 5, borderRadius: '50%', background: isS ? S.accent : S.muted }} />
@@ -332,25 +327,18 @@ export default function DutyTab({ trainers = [] }) {
             })}
           </div>
 
-          {/* Selected day */}
+          {/* Selected day card */}
           <div style={{ background: S.card, border: `1px solid ${S.border}`, borderRadius: 12, overflow: 'hidden' }}>
             <div style={{ padding: '13px 18px', borderBottom: `1px solid ${S.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 13, fontWeight: 700, color: S.text }}>
-                {fmtDisplay(selectedDate)}
-              </span>
-              <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: S.muted }}>
-                {dayDuty.length} trainer{dayDuty.length !== 1 ? 's' : ''} on duty
-              </span>
+              <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 13, fontWeight: 700, color: S.text }}>{fmtDisplay(selectedDate)}</span>
+              <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: S.muted }}>{dayDuty.length} trainer{dayDuty.length !== 1 ? 's' : ''} on duty</span>
             </div>
-
             <div style={{ padding: '16px 18px' }}>
               {dayDuty.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '24px 0', color: S.muted, fontFamily: "'DM Sans', sans-serif", fontSize: 13 }}>
                   No trainers assigned for this day.
                   <div style={{ marginTop: 12 }}>
-                    <Button size="sm" icon={<Plus size={13} />} onClick={() => { setForm({ ...defaultForm, date: selectedDate }); setAssignOpen(true); }}>
-                      Assign Trainer
-                    </Button>
+                    <Button size="sm" icon={<Plus size={13} />} onClick={() => { setForm({ ...defaultForm, date: selectedDate }); setConflicts([]); setAssignOpen(true); }}>Assign Trainer</Button>
                   </div>
                 </div>
               ) : (
@@ -386,23 +374,14 @@ export default function DutyTab({ trainers = [] }) {
             </div>
           </div>
         </>
-
       ) : (
-
-        // ════════════════════════════════════════════════
-        // RECURRING PATTERNS VIEW
-        // ════════════════════════════════════════════════
+        /* Recurring patterns view */
         <div style={{ background: S.card, border: `1px solid ${S.border}`, borderRadius: 12, overflow: 'hidden' }}>
           <div style={{ padding: '13px 18px', borderBottom: `1px solid ${S.border}` }}>
-            <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 13, fontWeight: 700, color: S.text }}>
-              Active Recurring Assignments ({patterns.length})
-            </span>
+            <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 13, fontWeight: 700, color: S.text }}>Active Recurring Assignments ({patterns.length})</span>
           </div>
-
           {patterns.length === 0 ? (
-            <div style={{ padding: '40px 0', textAlign: 'center', color: S.muted, fontFamily: "'DM Sans', sans-serif", fontSize: 13 }}>
-              No recurring assignments. Use "Assign Trainer" → Recurring to create one.
-            </div>
+            <div style={{ padding: '40px 0', textAlign: 'center', color: S.muted, fontFamily: "'DM Sans', sans-serif", fontSize: 13 }}>No recurring assignments.</div>
           ) : (
             <div style={{ padding: '12px' }}>
               {patterns.map((p) => {
@@ -421,8 +400,6 @@ export default function DutyTab({ trainers = [] }) {
                           </p>
                         </div>
                       </div>
-
-                      {/* Days of week pills */}
                       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 8 }}>
                         {p.days_of_week.map((day) => (
                           <span key={day} style={{ fontFamily: "'Outfit', sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'capitalize', background: S.accentbg2, border: `1px solid ${S.accent}`, color: S.accent, borderRadius: 6, padding: '2px 8px' }}>
@@ -430,21 +407,28 @@ export default function DutyTab({ trainers = [] }) {
                           </span>
                         ))}
                       </div>
-
-                      {/* Date range */}
                       <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: S.muted, margin: 0 }}>
                         {fmtDisplay(p.start_date)} → {fmtDisplay(p.end_date)}
                       </p>
                     </div>
-
-                    <button onClick={() => deletePattern(p)} disabled={deletingPat === p.id}
-                      style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${S.border2}`, background: 'transparent', cursor: 'pointer', color: S.muted, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all .15s', flexShrink: 0, opacity: deletingPat === p.id ? 0.6 : 1 }}
-                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = S.red; e.currentTarget.style.color = S.red; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = S.border2; e.currentTarget.style.color = S.muted; }}
-                      title="Delete pattern and future entries"
-                    >
-                      <Trash2 size={13} />
-                    </button>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <button onClick={() => startEditPattern(p)}
+                        style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${S.border2}`, background: 'transparent', cursor: 'pointer', color: S.muted, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all .15s' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = S.accent; e.currentTarget.style.color = S.accent; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = S.border2; e.currentTarget.style.color = S.muted; }}
+                        title="Edit pattern"
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button onClick={() => deletePattern(p)} disabled={deletingPat === p.id}
+                        style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${S.border2}`, background: 'transparent', cursor: 'pointer', color: S.muted, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all .15s', opacity: deletingPat === p.id ? 0.6 : 1 }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = S.red; e.currentTarget.style.color = S.red; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = S.border2; e.currentTarget.style.color = S.muted; }}
+                        title="Delete pattern"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </div>
                 );
               })}
@@ -453,15 +437,13 @@ export default function DutyTab({ trainers = [] }) {
         </div>
       )}
 
-      {/* ════════════════════════════════════════════════
-          ASSIGN MODAL
-          ════════════════════════════════════════════════ */}
-      <Modal open={assignOpen} onClose={() => setAssignOpen(false)} title="Assign Trainer" size="md"
+      {/* ── Assign Modal ── */}
+      <Modal open={assignOpen} onClose={() => { setAssignOpen(false); setEditingPat(null); setConflicts([]); }} title={editingPat ? "Edit Recurring Assignment" : "Assign Trainer"} size="md"
         footer={
           <>
             <Button variant="ghost" onClick={() => setAssignOpen(false)}>Cancel</Button>
             <Button loading={saving} onClick={handleSave}>
-              {form.mode === 'recurring' ? `Assign (${preview.length} days)` : 'Assign'}
+              {form.mode === 'recurring' ? `Assign (${totalPreviewDates} days)` : 'Assign'}
             </Button>
           </>
         }
@@ -482,9 +464,7 @@ export default function DutyTab({ trainers = [] }) {
                     <div style={{ width: 30, height: 30, borderRadius: 7, background: sel ? S.accentbg2 : S.bg3, border: `1px solid ${sel ? S.accent : S.border2}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Outfit', sans-serif", fontSize: 10, fontWeight: 700, color: sel ? S.accent : S.muted, flexShrink: 0 }}>
                       {initials(name)}
                     </div>
-                    <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 600, color: sel ? S.accent : S.text }}>
-                      {name}
-                    </span>
+                    <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 600, color: sel ? S.accent : S.text }}>{name}</span>
                     {sel && <Check size={14} style={{ color: S.accent, marginLeft: 'auto' }} />}
                   </button>
                 );
@@ -492,18 +472,32 @@ export default function DutyTab({ trainers = [] }) {
             </div>
           </div>
 
+          {/* Conflict warning */}
+          {conflicts.length > 0 && (
+            <div style={{ display: 'flex', gap: 10, padding: '10px 14px', background: S.orangebg, border: `1px solid ${S.orange}`, borderRadius: 8 }}>
+              <AlertTriangle size={15} style={{ color: S.orange, flexShrink: 0, marginTop: 1 }} />
+              <div>
+                <p style={{ fontFamily: "'Outfit', sans-serif", fontSize: 12, fontWeight: 700, color: S.orange, margin: '0 0 4px' }}>
+                  {conflicts.length} conflict{conflicts.length > 1 ? 's' : ''} detected
+                </p>
+                <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: S.orange, margin: 0 }}>
+                  This trainer already has duty on {conflicts.length > 3
+                    ? `${conflicts.slice(0, 3).map((d) => { const [y,m,dd] = d.split('-').map(Number); return new Date(Date.UTC(y,m-1,dd)).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' }); }).join(', ')} +${conflicts.length - 3} more`
+                    : conflicts.map((d) => { const [y,m,dd] = d.split('-').map(Number); return new Date(Date.UTC(y,m-1,dd)).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' }); }).join(', ')
+                  }. Saving will overwrite existing entries.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div style={{ height: 1, background: S.border }} />
 
           {/* Mode toggle */}
           <div>
             <label style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: S.muted, display: 'block', marginBottom: 8 }}>Assignment Type</label>
             <div style={{ display: 'flex', gap: 8 }}>
-              {[
-                { id: 'onetime',   label: 'One-time',  icon: Calendar },
-                { id: 'recurring', label: 'Recurring', icon: Repeat   },
-              ].map((m) => {
-                const Icon = m.icon;
-                const on   = form.mode === m.id;
+              {[{ id: 'onetime', label: 'One-time', icon: Calendar }, { id: 'recurring', label: 'Recurring', icon: Repeat }].map((m) => {
+                const Icon = m.icon; const on = form.mode === m.id;
                 return (
                   <button key={m.id} onClick={() => setForm((p) => ({ ...p, mode: m.id }))}
                     style={{ flex: 1, height: 40, borderRadius: 8, border: `1px solid ${on ? S.accent : S.border2}`, background: on ? S.accentbg2 : 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontFamily: "'Outfit', sans-serif", fontSize: 12, fontWeight: 600, color: on ? S.accent : S.text2, transition: 'all .15s' }}
@@ -515,36 +509,31 @@ export default function DutyTab({ trainers = [] }) {
             </div>
           </div>
 
-          {/* One-time — single date */}
+          {/* One-time date */}
           {form.mode === 'onetime' && (
             <div>
               <label style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: S.muted, display: 'block', marginBottom: 6 }}>Date *</label>
-              <input type="date" value={form.date} min={fmtDate(today)}
+              <input type="date" value={form.date} min={todayStr}
                 onChange={(e) => setForm((p) => ({ ...p, date: e.target.value }))}
                 style={{ width: '100%', height: 38, background: S.bg3, border: `1px solid ${S.border2}`, borderRadius: 8, padding: '0 12px', fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: S.text, outline: 'none' }}
               />
             </div>
           )}
 
-          {/* Recurring — days + date range */}
+          {/* Recurring */}
           {form.mode === 'recurring' && (
             <>
               <div>
                 <label style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: S.muted, display: 'block', marginBottom: 8 }}>Days of Week *</label>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {DAYS_FULL.map((day, i) => {
-                    const on         = form.days_of_week.includes(day);
+                    const on          = form.days_of_week.includes(day);
                     const isWeeklyOff = (settings?.weekly_off_days || []).includes(day);
                     return (
                       <button key={day}
-                        onClick={() => !isWeeklyOff && setForm((p) => ({
-                          ...p,
-                          days_of_week: on
-                            ? p.days_of_week.filter((d) => d !== day)
-                            : [...p.days_of_week, day],
-                        }))}
+                        onClick={() => setForm((p) => ({ ...p, days_of_week: on ? p.days_of_week.filter((d) => d !== day) : [...p.days_of_week, day] }))}
                         title={isWeeklyOff ? 'Weekly off day' : ''}
-                        style={{ width: 42, height: 42, borderRadius: 10, border: `1px solid ${isWeeklyOff ? S.red : on ? S.accent : S.border2}`, background: isWeeklyOff ? S.redbg : on ? S.accentbg2 : 'transparent', cursor: isWeeklyOff ? 'not-allowed' : 'pointer', fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, color: isWeeklyOff ? S.red : on ? S.accent : S.muted, transition: 'all .15s', opacity: isWeeklyOff ? 0.6 : 1 }}
+                        style={{ width: 42, height: 42, borderRadius: 10, border: `1px solid ${on ? S.accent : isWeeklyOff ? S.red : S.border2}`, background: on ? S.accentbg2 : 'transparent', cursor: 'pointer', fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, color: on ? S.accent : isWeeklyOff ? S.red : S.muted, transition: 'all .15s', opacity: isWeeklyOff && !on ? 0.5 : 1 }}
                       >
                         {DAYS_S[i]}
                       </button>
@@ -555,14 +544,14 @@ export default function DutyTab({ trainers = [] }) {
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div>
-                  <label style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: S.muted, display: 'block', marginBottom: 6 }}>From *</label>
-                  <input type="date" value={form.start_date} min={fmtDate(today)}
+                  <label style={{ fontFamily: "'Outfit', sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: S.muted, display: 'block', marginBottom: 6 }}>From *</label>
+                  <input type="date" value={form.start_date} min={todayStr}
                     onChange={(e) => setForm((p) => ({ ...p, start_date: e.target.value }))}
                     style={{ width: '100%', height: 38, background: S.bg3, border: `1px solid ${S.border2}`, borderRadius: 8, padding: '0 12px', fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: S.text, outline: 'none' }}
                   />
                 </div>
                 <div>
-                  <label style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: S.muted, display: 'block', marginBottom: 6 }}>Until *</label>
+                  <label style={{ fontFamily: "'Outfit', sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: S.muted, display: 'block', marginBottom: 6 }}>Until *</label>
                   <input type="date" value={form.end_date} min={form.start_date}
                     onChange={(e) => setForm((p) => ({ ...p, end_date: e.target.value }))}
                     style={{ width: '100%', height: 38, background: S.bg3, border: `1px solid ${S.border2}`, borderRadius: 8, padding: '0 12px', fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: S.text, outline: 'none' }}
@@ -570,21 +559,23 @@ export default function DutyTab({ trainers = [] }) {
                 </div>
               </div>
 
-              {/* Preview */}
               {preview.length > 0 && (
                 <div style={{ padding: '10px 14px', background: S.accentbg2, border: `1px solid ${S.accent}`, borderRadius: 8 }}>
                   <p style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, color: S.accent, marginBottom: 6 }}>
                     Preview — first {Math.min(preview.length, 10)} dates:
                   </p>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {preview.map((d) => (
-                      <span key={d} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: S.text2, background: S.bg3, border: `1px solid ${S.border}`, borderRadius: 4, padding: '2px 6px' }}>
-                        {new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                      </span>
-                    ))}
-                    {generateDates(form.start_date, form.end_date, form.days_of_week).length > 10 && (
+                    {preview.map((d) => {
+                      const [y,m,dd] = d.split('-').map(Number);
+                      return (
+                        <span key={d} style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: S.text2, background: S.bg3, border: `1px solid ${S.border}`, borderRadius: 4, padding: '2px 6px' }}>
+                          {new Date(Date.UTC(y,m-1,dd)).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' })}
+                        </span>
+                      );
+                    })}
+                    {totalPreviewDates > 10 && (
                       <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 10, color: S.muted, padding: '2px 4px' }}>
-                        +{generateDates(form.start_date, form.end_date, form.days_of_week).length - 10} more
+                        +{totalPreviewDates - 10} more
                       </span>
                     )}
                   </div>
@@ -595,7 +586,7 @@ export default function DutyTab({ trainers = [] }) {
 
           <div style={{ height: 1, background: S.border }} />
 
-          {/* Shift type */}
+          {/* Shift */}
           <div>
             <label style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: S.muted, display: 'block', marginBottom: 8 }}>Shift</label>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -607,7 +598,6 @@ export default function DutyTab({ trainers = [] }) {
                   <div style={{ position: 'absolute', top: 2, left: form.is_full_day ? 20 : 2, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left .2s', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />
                 </button>
               </div>
-
               {!form.is_full_day && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Clock size={13} style={{ color: S.muted }} />

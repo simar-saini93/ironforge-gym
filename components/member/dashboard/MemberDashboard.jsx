@@ -9,8 +9,7 @@ import {
   CreditCard, CalendarDays, Mail, CheckCircle2,
   AlertTriangle, Clock, Dumbbell, QrCode,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import { formatDate, daysLeft, planLabel, formatCurrency } from '@/utils/format';
+import { formatDate, daysLeft, planLabel, formatCurrency } from '@/lib/utils/format';
 
 const M = {
   accent:    '#E8FF00',
@@ -31,19 +30,10 @@ const M = {
   orangebg:  'rgba(249,115,22,0.09)',
 };
 
-// ── Stat card ────────────────────────────────────────────────
 function StatCard({ icon: Icon, label, value, color, bg, onClick }) {
   return (
-    <div
-      onClick={onClick}
-      style={{
-        background:   M.card,
-        border:       `1px solid ${M.border}`,
-        borderRadius: 14,
-        padding:      '20px',
-        cursor:       onClick ? 'pointer' : 'default',
-        transition:   'all .2s',
-      }}
+    <div onClick={onClick}
+      style={{ background: M.card, border: `1px solid ${M.border}`, borderRadius: 14, padding: '20px', cursor: onClick ? 'pointer' : 'default', transition: 'all .2s' }}
       onMouseEnter={(e) => { if (onClick) { e.currentTarget.style.borderColor = M.accent; e.currentTarget.style.transform = 'translateY(-2px)'; } }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = M.border; e.currentTarget.style.transform = 'none'; }}
     >
@@ -51,80 +41,34 @@ function StatCard({ icon: Icon, label, value, color, bg, onClick }) {
         <div style={{ width: 38, height: 38, borderRadius: 10, background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <Icon size={18} style={{ color }} />
         </div>
-        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: M.text2 }}>
-          {label}
-        </span>
+        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: M.text2 }}>{label}</span>
       </div>
-      <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 32, letterSpacing: 1, color: M.text, lineHeight: 1 }}>
-        {value}
-      </p>
+      <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 32, letterSpacing: 1, color: M.text, lineHeight: 1 }}>{value}</p>
     </div>
   );
 }
 
-// ── Skeleton ─────────────────────────────────────────────────
 function Skeleton({ h = 100, radius = 14 }) {
-  return (
-    <div style={{ height: h, borderRadius: radius, background: M.card, border: `1px solid ${M.border}`, animation: 'pulse 1.5s infinite' }} />
-  );
+  return <div style={{ height: h, borderRadius: radius, background: M.card, border: `1px solid ${M.border}`, animation: 'pulse 1.5s infinite' }} />;
 }
 
 export default function MemberDashboard() {
-  const router   = useRouter();
-  const supabase = createClient();
+  const router = useRouter();
 
-  const [data,          setData]          = useState(null);
-  const [loading,       setLoading]       = useState(true);
-  const [requestingCode,setRequestingCode]= useState(false);
-  const [codeSent,      setCodeSent]      = useState(false);
+  const [data,           setData]           = useState(null);
+  const [loading,        setLoading]        = useState(true);
+  const [requestingCode, setRequestingCode] = useState(false);
+  const [codeSent,       setCodeSent]       = useState(false);
 
   useEffect(() => { fetchData(); }, []);
 
   async function fetchData() {
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('first_name, last_name, email')
-        .eq('id', user.id)
-        .single();
-
-      const { data: member } = await supabase
-        .from('members')
-        .select(`
-          id, member_number, profile_pic_url, created_at,
-          subscription:member_subscriptions(
-            id, status, start_date, end_date,
-            plan:membership_plans(billing_cycle, price)
-          ),
-          trainer:member_trainer_assignments(
-            is_active,
-            trainer:trainers(
-              specialization,
-              profile:profiles(first_name, last_name)
-            )
-          )
-        `)
-        .eq('profile_id', user.id)
-        .single();
-
-      const { count: attendanceCount } = await supabase
-        .from('access_logs')
-        .select('*', { count: 'exact', head: true })
-        .eq('member_id', member?.id)
-        .eq('status', 'granted');
-
-      const { data: recentPayments } = await supabase
-        .from('payments')
-        .select('id, amount, payment_date, payment_method')
-        .eq('member_id', member?.id)
-        .order('payment_date', { ascending: false })
-        .limit(3);
-
-      setData({ profile, member, attendanceCount: attendanceCount || 0, recentPayments: recentPayments || [] });
+      const res  = await fetch('/api/member/dashboard');
+      if (!res.ok) throw new Error('Failed to fetch dashboard');
+      const json = await res.json();
+      setData(json);
     } catch (err) {
       console.error('Member dashboard error:', err?.message);
     } finally {
@@ -157,50 +101,24 @@ export default function MemberDashboard() {
     );
   }
 
-  const { profile, member, attendanceCount, recentPayments } = data || {};
-  const activeSub = member?.subscription?.find((s) => s.status === 'active') || member?.subscription?.[0];
+  const { profile, member, activeSub, trainer, attendanceCount, recentPayments } = data || {};
   const days      = daysLeft(activeSub?.end_date);
-  const trainer   = member?.trainer?.find((t) => t.is_active)?.trainer;
   const firstName = profile?.first_name || 'Member';
 
-  const subColor = days === null ? M.text2
-    : days <= 0  ? M.red
-    : days <= 7  ? M.red
-    : days <= 14 ? M.orange
-    : M.green;
-
-  const subBg = days === null ? M.card2
-    : days <= 0  ? M.redbg
-    : days <= 7  ? M.redbg
-    : days <= 14 ? M.orangebg
-    : M.greenbg;
+  const subColor = days === null ? M.text2 : days <= 0 ? M.red : days <= 7 ? M.red : days <= 14 ? M.orange : M.green;
+  const subBg    = days === null ? M.card2 : days <= 0 ? M.redbg : days <= 7 ? M.redbg : days <= 14 ? M.orangebg : M.greenbg;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }`}</style>
 
-      {/* ── Holiday ribbon ── */}
       <HolidayRibbon />
 
-      {/* ── Welcome banner ── */}
-      <div style={{
-        background:   M.accentbg2,
-        border:       `1px solid ${M.accent}`,
-        borderRadius: 14,
-        padding:      '20px 24px',
-        display:      'flex',
-        alignItems:   'center',
-        justifyContent: 'space-between',
-        flexWrap:     'wrap',
-        gap:          12,
-      }}>
+      {/* Welcome banner */}
+      <div style={{ background: M.accentbg2, border: `1px solid ${M.accent}`, borderRadius: 14, padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <p style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.2em', textTransform: 'uppercase', color: M.accent, marginBottom: 4 }}>
-            Welcome back
-          </p>
-          <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, letterSpacing: 1, color: M.text, lineHeight: 1 }}>
-            {firstName}
-          </h1>
+          <p style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.2em', textTransform: 'uppercase', color: M.accent, marginBottom: 4 }}>Welcome back</p>
+          <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, letterSpacing: 1, color: M.text, lineHeight: 1 }}>{firstName}</h1>
           <p style={{ fontFamily: "'Barlow', sans-serif", fontSize: 13, color: M.text2, marginTop: 4 }}>
             Member #{member?.member_number} · Joined {formatDate(member?.created_at)}
           </p>
@@ -222,63 +140,25 @@ export default function MemberDashboard() {
         )}
       </div>
 
-      {/* ── Stat cards ── */}
+      {/* Stat cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
-        <StatCard
-          icon={CreditCard}
-          label="Current Plan"
-          value={planLabel(activeSub?.plan?.billing_cycle) || 'No Plan'}
-          color={M.accent}
-          bg={M.accentbg2}
-          onClick={() => router.push('/member/subscription')}
-        />
-        <StatCard
-          icon={Clock}
-          label="Expiry"
-          value={formatDate(activeSub?.end_date) || '—'}
-          color={subColor}
-          bg={subBg}
-          onClick={() => router.push('/member/subscription')}
-        />
-        <StatCard
-          icon={CalendarDays}
-          label="Check-ins"
-          value={String(attendanceCount)}
-          color={M.green}
-          bg={M.greenbg}
-          onClick={() => router.push('/member/attendance')}
-        />
-        <StatCard
-          icon={Dumbbell}
-          label="Trainer"
-          value={trainer ? `${trainer.profile?.first_name} ${trainer.profile?.last_name}` : 'Not Assigned'}
-          color="#a78bfa"
-          bg="rgba(167,139,250,0.09)"
-          onClick={() => router.push('/member/trainer')}
-        />
+        <StatCard icon={CreditCard}  label="Current Plan" value={planLabel(activeSub?.plan?.billing_cycle) || 'No Plan'} color={M.accent}   bg={M.accentbg2} onClick={() => router.push('/member/subscription')} />
+        <StatCard icon={Clock}       label="Expiry"        value={formatDate(activeSub?.end_date) || '—'}                color={subColor}    bg={subBg}       onClick={() => router.push('/member/subscription')} />
+        <StatCard icon={CalendarDays}label="Check-ins"     value={String(attendanceCount)}                               color={M.green}     bg={M.greenbg}   onClick={() => router.push('/member/attendance')} />
+        <StatCard icon={Dumbbell}    label="Trainer"       value={trainer ? `${trainer.trainer?.profile?.first_name} ${trainer.trainer?.profile?.last_name}` : 'Not Assigned'} color="#a78bfa" bg="rgba(167,139,250,0.09)" onClick={() => router.push('/member/trainer')} />
       </div>
 
-      {/* ── Access code card ── */}
-      <div style={{
-        background:   M.card,
-        border:       `1px solid ${M.border}`,
-        borderRadius: 14,
-        padding:      '22px 24px',
-      }}>
+      {/* Access code card */}
+      <div style={{ background: M.card, border: `1px solid ${M.border}`, borderRadius: 14, padding: '22px 24px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ width: 44, height: 44, borderRadius: 12, background: M.accentbg2, border: `1px solid ${M.accent}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <QrCode size={22} style={{ color: M.accent }} />
             </div>
             <div>
-              <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: 1, color: M.text, lineHeight: 1 }}>
-                Daily Access Code
-              </p>
+              <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: 1, color: M.text, lineHeight: 1 }}>Daily Access Code</p>
               <p style={{ fontFamily: "'Barlow', sans-serif", fontSize: 12, color: M.text2, marginTop: 3 }}>
-                {codeSent
-                  ? 'Code sent to your email ✓'
-                  : 'Get your 4-digit code to enter the gym'
-                }
+                {codeSent ? 'Code sent to your email ✓' : 'Get your 4-digit code to enter the gym'}
               </p>
             </div>
           </div>
@@ -286,32 +166,11 @@ export default function MemberDashboard() {
           {codeSent ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 20px', borderRadius: 10, background: M.greenbg, border: `1px solid ${M.green}` }}>
               <CheckCircle2 size={16} style={{ color: M.green }} />
-              <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: M.green }}>
-                Check your email
-              </span>
+              <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: M.green }}>Check your email</span>
             </div>
           ) : (
-            <button
-              onClick={handleRequestCode}
-              disabled={requestingCode || !activeSub || activeSub.status !== 'active'}
-              style={{
-                height:       44,
-                padding:      '0 24px',
-                borderRadius: 10,
-                background:   (!activeSub || activeSub.status !== 'active') ? M.card2 : M.accent,
-                color:        (!activeSub || activeSub.status !== 'active') ? M.muted : '#000',
-                border:       'none',
-                fontFamily:   "'Barlow Condensed', sans-serif",
-                fontSize:     13,
-                fontWeight:   700,
-                letterSpacing:'.1em',
-                textTransform:'uppercase',
-                cursor:       (!activeSub || activeSub.status !== 'active') ? 'not-allowed' : 'pointer',
-                transition:   'all .2s',
-                display:      'flex',
-                alignItems:   'center',
-                gap:          8,
-              }}
+            <button onClick={handleRequestCode} disabled={requestingCode || !activeSub || activeSub.status !== 'active'}
+              style={{ height: 44, padding: '0 24px', borderRadius: 10, background: (!activeSub || activeSub.status !== 'active') ? M.card2 : M.accent, color: (!activeSub || activeSub.status !== 'active') ? M.muted : '#000', border: 'none', fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', cursor: (!activeSub || activeSub.status !== 'active') ? 'not-allowed' : 'pointer', transition: 'all .2s', display: 'flex', alignItems: 'center', gap: 8 }}
               onMouseEnter={(e) => { if (activeSub?.status === 'active') { e.currentTarget.style.filter = 'brightness(1.1)'; e.currentTarget.style.transform = 'translateY(-1px)'; } }}
               onMouseLeave={(e) => { e.currentTarget.style.filter = 'none'; e.currentTarget.style.transform = 'none'; }}
             >
@@ -324,15 +183,13 @@ export default function MemberDashboard() {
         {(!activeSub || activeSub.status !== 'active') && (
           <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: M.redbg, borderRadius: 8, border: `1px solid ${M.red}` }}>
             <AlertTriangle size={14} style={{ color: M.red, flexShrink: 0 }} />
-            <span style={{ fontFamily: "'Barlow', sans-serif", fontSize: 12, color: M.red }}>
-              Your membership is not active. Contact the gym to renew.
-            </span>
+            <span style={{ fontFamily: "'Barlow', sans-serif", fontSize: 12, color: M.red }}>Your membership is not active. Contact the gym to renew.</span>
           </div>
         )}
       </div>
 
-      {/* ── Recent payments ── */}
-      {recentPayments.length > 0 && (
+      {/* Recent payments */}
+      {recentPayments?.length > 0 && (
         <div style={{ background: M.card, border: `1px solid ${M.border}`, borderRadius: 14, overflow: 'hidden' }}>
           <div style={{ padding: '14px 20px', borderBottom: `1px solid ${M.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, letterSpacing: 1, color: M.text }}>Recent Payments</span>
@@ -340,9 +197,7 @@ export default function MemberDashboard() {
               style={{ background: 'none', border: 'none', fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: M.accent, cursor: 'pointer', opacity: .85 }}
               onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
               onMouseLeave={(e) => (e.currentTarget.style.opacity = '.85')}
-            >
-              View All
-            </button>
+            >View All</button>
           </div>
           {recentPayments.map((p, i) => (
             <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', borderBottom: i < recentPayments.length - 1 ? `1px solid ${M.border}` : 'none' }}>
@@ -350,9 +205,7 @@ export default function MemberDashboard() {
                 <p style={{ fontFamily: "'Barlow', sans-serif", fontSize: 13, fontWeight: 600, color: M.text }}>{formatDate(p.payment_date)}</p>
                 <p style={{ fontFamily: "'Barlow', sans-serif", fontSize: 11, color: M.text2, textTransform: 'capitalize' }}>{p.payment_method?.replace('_', ' ')}</p>
               </div>
-              <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, letterSpacing: 1, color: M.green }}>
-                {formatCurrency(p.amount)}
-              </span>
+              <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, letterSpacing: 1, color: M.green }}>{formatCurrency(p.amount)}</span>
             </div>
           ))}
         </div>

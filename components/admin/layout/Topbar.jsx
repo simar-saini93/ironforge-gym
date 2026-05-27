@@ -13,8 +13,8 @@ const SearchBar = dynamic(() => import('@/components/admin/layout/SearchBar'), {
   loading: () => <div style={{ width: 240, height: 36, background: 'var(--if-card)', border: '1px solid var(--if-border2)', borderRadius: 8 }} />,
 });
 import { useRouter } from 'next/navigation';
+import { useClerk }  from '@clerk/nextjs';
 import { useTheme } from '@/components/admin/layout/ThemeProvider';
-import { createClient } from '@/lib/supabase/client';
 
 export default function Topbar({
   title, subtitle, actions, profile,
@@ -23,7 +23,7 @@ export default function Topbar({
 }) {
   const { theme, toggleTheme } = useTheme();
   const router   = useRouter();
-  const supabase = createClient();
+  const { signOut } = useClerk();
 
   const initials = profile
     ? `${profile.first_name?.[0] || ''}${profile.last_name?.[0] || ''}`.toUpperCase()
@@ -34,9 +34,7 @@ export default function Topbar({
     : 'Super Admin';
 
   async function handleLogout() {
-    await supabase.auth.signOut();
-    router.push('/login');
-    router.refresh();
+    await signOut({ redirectUrl: '/login' });
   }
 
   const iconBtnStyle = {

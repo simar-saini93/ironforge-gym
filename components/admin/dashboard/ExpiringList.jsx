@@ -39,7 +39,7 @@ export default function ExpiringList({ members = [] }) {
       {/* Header */}
       <div
         className="flex items-center justify-between px-5 py-3.5 flex-shrink-0"
-        style={{ borderBottom: '1px solid var(--if-border)' }}
+        style={{ borderBottom: '1px solid var(--if-border)', padding: '0.5rem' }}
       >
         <div className="flex items-center gap-2">
           <div
@@ -79,7 +79,7 @@ export default function ExpiringList({ members = [] }) {
         {members.length === 0 ? (
           <div
             className="flex items-center justify-center py-10"
-            style={{ color: 'var(--if-muted)', fontSize: 13 }}
+            style={{ color: 'var(--if-muted)', fontSize: 13, padding: '0.5rem' }}
           >
             No expiring memberships
           </div>

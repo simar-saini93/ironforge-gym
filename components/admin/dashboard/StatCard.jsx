@@ -58,6 +58,7 @@ export default function StatCard({ title, value, icon: Icon, iconColor, trend, t
               fontFamily:    "'Outfit', sans-serif",
               fontSize:      11,
               fontWeight:    600,
+              padding:       '2px 8px',
             }}
           >
             {trend === 'up'   && <TrendingUp   size={11} />}

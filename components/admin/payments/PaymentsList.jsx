@@ -1,8 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import { Search } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import { formatDate, formatCurrency, fullName } from '@/utils/format';
+import { formatDate, formatCurrency, fullName } from '@/lib/utils/format';
 import Badge        from '@/components/ui/Badge';
 import Pagination   from '@/components/ui/Pagination';
 import EmptyState   from '@/components/ui/EmptyState';
@@ -12,7 +11,6 @@ import ReceiptModal from '@/components/shared/ReceiptModal';
 const PAGE_SIZE = 20;
 
 export default function PaymentsList() {
-  const supabase = createClient();
 
   const [payments,  setPayments]  = useState([]);
   const [loading,   setLoading]   = useState(true);
@@ -28,33 +26,17 @@ export default function PaymentsList() {
   const fetchPayments = useCallback(async () => {
     setLoading(true);
     try {
-      let query = supabase
-        .from('payments')
-        .select(`
-          id, amount, payment_method, payment_date, reference_no, notes,
-          member:members(member_number, profile:profiles(first_name, last_name, email))
-        `, { count: 'exact' })
-        .order('payment_date', { ascending: false })
-        .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+      const params = new URLSearchParams({ page: String(page) });
+      if (search.trim()) params.set('search', search.trim());
+      if (method)        params.set('method', method);
 
-      if (method) query = query.eq('payment_method', method);
+      const res  = await fetch(`/api/admin/payments?${params}`);
+      if (!res.ok) throw new Error('Failed to fetch payments');
+      const json = await res.json();
 
-      const { data, count, error } = await query;
-      if (error) throw error;
-
-      let filtered = data || [];
-      if (search.trim()) {
-        const s = search.toLowerCase();
-        filtered = filtered.filter((p) =>
-          fullName(p.member?.profile).toLowerCase().includes(s) ||
-          p.member?.member_number?.toLowerCase().includes(s) ||
-          p.reference_no?.toLowerCase().includes(s)
-        );
-      }
-
-      setPayments(filtered);
-      setTotal(count || 0);
-      setSummary({ total: (data || []).reduce((sum, p) => sum + Number(p.amount), 0), count: count || 0 });
+      setPayments(json.payments || []);
+      setTotal(json.total      || 0);
+      setSummary(json.summary  || { total: 0, count: 0 });
     } catch (err) {
       console.error('Failed to fetch payments:', err?.message);
     } finally {

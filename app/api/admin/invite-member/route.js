@@ -1,119 +1,103 @@
-import { NextResponse }          from 'next/server';
-import { createClient }          from '@supabase/supabase-js';
-import { Resend }                from 'resend';
-import { inviteMemberSchema }    from '@/lib/schemas/member';
-import { memberInviteTemplate }  from '@/lib/email/templates';
-
-// ── Service role client — bypasses RLS ───────────────────────
-function getAdminClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    {
-      auth: {
-        autoRefreshToken: false,
-        persistSession:   false,
-      },
-    }
-  );
-}
+import { NextResponse }         from 'next/server';
+import { auth, clerkClient }    from '@clerk/nextjs/server';
+import { Resend }               from 'resend';
+import { drizzleDb }            from '@/db/index';
+import { pendingInvitations, branches } from '@/db/schema';
+import { eq }                   from 'drizzle-orm';
+import { memberInviteTemplate } from '@/lib/email/templates';
+import { inviteLimiter, rateLimitResponse } from '@/lib/utils/rate-limit';
+import { inviteMemberSchema, validateBody } from '@/lib/utils/validate';
 
 export async function POST(request) {
   try {
-    const body = await request.json();
-
-    // ── Validate input ────────────────────────────────────────
-    const result = inviteMemberSchema.safeParse(body);
-    if (!result.success) {
-      return NextResponse.json(
-        { error: result.error.flatten().fieldErrors.email?.[0] || 'Invalid input' },
-        { status: 400 }
-      );
+    // ── Auth ──────────────────────────────────────────────────
+    const { userId, sessionClaims } = await auth();
+    if (!userId || sessionClaims?.metadata?.role !== 'admin') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { email } = result.data;
-    const firstName  = body.firstName || 'there';
-    const supabaseAdmin = getAdminClient();
+    // ── Rate limit — 10 invites per hour per user ─────────────
+    try { await inviteLimiter.check(10, userId); }
+    catch { return rateLimitResponse(10); }
 
-    // ── Check if user already exists ─────────────────────────
-    const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers();
-    const existing = existingUsers?.users?.find(
-      (u) => u.email?.toLowerCase() === email.toLowerCase()
-    );
+    // ── Validate input ────────────────────────────────────────
+    const body = await request.json();
+    const { success, data, error } = validateBody(inviteMemberSchema, body);
+    if (!success) return error;
 
-    if (existing) {
+    const { email, firstName, branchId } = data;
+    const client = await clerkClient();
+
+    // ── Check if user already exists in Clerk ─────────────────
+    const existing = await client.users.getUserList({ emailAddress: [email] });
+    if (existing.totalCount > 0) {
       return NextResponse.json(
         { error: 'A user with this email already exists.', existing: true },
         { status: 409 }
       );
     }
 
-    // ── Create auth user (email pre-confirmed) ────────────────
-    const { data: newUser, error: createError } =
-      await supabaseAdmin.auth.admin.createUser({
-        email,
-        email_confirm: true,
-        user_metadata: { role: 'member' },
-      });
+    // ── Create Clerk invitation ───────────────────────────────
+    const invitation = await client.invitations.createInvitation({
+      emailAddress:   email,
+      redirectUrl:    `${process.env.NEXT_PUBLIC_APP_URL}/set-password`,
+      publicMetadata: { role: 'member', branchId },
+      ignoreExisting: true,
+    });
 
-    if (createError) {
-      console.error('[invite-member] createUser error:', createError);
-      return NextResponse.json(
-        { error: createError.message || 'Failed to create user' },
-        { status: 500 }
-      );
-    }
-
-    const userId = newUser.user.id;
-
-    // ── Generate password setup link ──────────────────────────
-    const { data: linkData, error: linkError } =
-      await supabaseAdmin.auth.admin.generateLink({
-        type:  'recovery',
-        email,
-        options: {
-          redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/set-password`,
-        },
-      });
-
-    if (linkError) {
-      console.error('[invite-member] generateLink error:', linkError);
-      return NextResponse.json(
-        { userId, warning: 'User created but invite link could not be generated.' },
-        { status: 201 }
-      );
-    }
-
-    const { hashed_token } = linkData.properties;
-    const setupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?token_hash=${hashed_token}&type=recovery&next=/set-password`;
-
-    // ── Send invite email via Resend ──────────────────────────
+    // ── Send custom invite email via Resend ───────────────────
     const resend   = new Resend(process.env.RESEND_API_KEY);
     const template = memberInviteTemplate({
       firstName,
       gymName:  'IronForge Gym',
-      setupUrl,
+      setupUrl: invitation.url,
     });
 
     const { error: emailError } = await resend.emails.send({
-      from:    process.env.EMAIL_FROM,
+      from:    process.env.EMAIL_FROM || 'IronForge Gym <noreply@ironforge.com>',
       to:      email,
       subject: template.subject,
       html:    template.html,
     });
 
     if (emailError) {
+      // Revoke invite if email fails — keep state clean
+      await client.invitations.revokeInvitation(invitation.id);
       console.error('[invite-member] Resend error:', emailError);
       return NextResponse.json(
-        { userId, warning: 'User created but invite email failed to send.' },
-        { status: 201 }
+        { error: 'Failed to send invite email. Please try again.' },
+        { status: 500 }
       );
     }
 
-    return NextResponse.json({ userId }, { status: 201 });
+    // ── Store pending invitation via Drizzle ──────────────────
+    const branchRows = await drizzleDb
+      .select({ id: branches.id })
+      .from(branches)
+      .limit(1);
+    const resolvedBranchId = branchId || branchRows[0]?.id;
+
+    await drizzleDb
+      .insert(pendingInvitations)
+      .values({
+        email:           email.trim().toLowerCase(),
+        first_name:      firstName,
+        clerk_invite_id: invitation.id,
+        branch_id:       resolvedBranchId,
+      })
+      .onConflictDoUpdate({
+        target: pendingInvitations.email,
+        set:    { clerk_invite_id: invitation.id, first_name: firstName },
+      });
+
+    return NextResponse.json(
+      { success: true, invitationId: invitation.id },
+      { status: 201 }
+    );
 
   } catch (err) {
-    console.error('[invite-member] Unexpected error:', err);
+    console.error('[invite-member] Unexpected error:', err?.message);
+    console.error('[invite-member] Clerk errors:', JSON.stringify(err.errors));
     return NextResponse.json(
       { error: err.message || 'Internal server error' },
       { status: 500 }

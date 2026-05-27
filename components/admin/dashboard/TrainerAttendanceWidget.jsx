@@ -70,7 +70,7 @@ export default function TrainerAttendanceWidget({ trainers = [] }) {
       {/* Header */}
       <div
         className="flex items-center justify-between px-5 py-3.5"
-        style={{ borderBottom: '1px solid var(--if-border)' }}
+        style={{ borderBottom: '1px solid var(--if-border)', padding: '0.5rem' }}
       >
         <div className="flex items-center gap-2">
           <div

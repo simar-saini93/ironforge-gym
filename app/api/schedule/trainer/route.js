@@ -1,59 +1,62 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
-
-function getAdminClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
-}
-
-async function getTrainer() {
-  try {
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-      { cookies: { getAll: () => cookieStore.getAll(), setAll: () => {} } }
-    );
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-    const { data: trainer } = await getAdminClient()
-      .from('trainers').select('id').eq('profile_id', user.id).single();
-    return trainer;
-  } catch { return null; }
-}
+import { auth }         from '@clerk/nextjs/server';
+import { drizzleDb }    from '@/db/index';
+import { trainers, trainerDuty } from '@/db/schema';
+import { eq, gte, asc } from 'drizzle-orm';
+import { trainerLimiter, rateLimitResponse } from '@/lib/utils/rate-limit';
 
 export async function GET() {
   try {
-    const trainer = await getTrainer();
-    if (!trainer) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    // ── Auth ──────────────────────────────────────────────────
+    const { userId, sessionClaims } = await auth();
+    const role = sessionClaims?.metadata?.role;
+    if (!userId || role !== 'trainer') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-    const db    = getAdminClient();
+    // ── Rate limit ────────────────────────────────────────────
+    try { await trainerLimiter.check(45, userId); }
+    catch { return rateLimitResponse(45); }
+
+    // ── Get trainer record ────────────────────────────────────
+    const trainerRows = await drizzleDb
+      .select({ id: trainers.id })
+      .from(trainers)
+      .where(eq(trainers.profile_id, userId))
+      .limit(1);
+
+    const trainer = trainerRows[0];
+    if (!trainer) return NextResponse.json({ error: 'Trainer not found' }, { status: 404 });
+
+    // ── Get upcoming duty ─────────────────────────────────────
     const today = new Date().toISOString().split('T')[0];
-    const in30  = new Date(Date.now() + 30 * 864e5).toISOString().split('T')[0];
 
-    const { data: duty } = await db
-      .from('trainer_duty')
-      .select('id, date, is_full_day, shift_start, shift_end')
-      .eq('trainer_id', trainer.id)
-      .gte('date', today)
-      .order('date', { ascending: true });
+    const duty = await drizzleDb
+      .select({
+        id:          trainerDuty.id,
+        date:        trainerDuty.date,
+        is_full_day: trainerDuty.is_full_day,
+        shift_start: trainerDuty.shift_start,
+        shift_end:   trainerDuty.shift_end,
+      })
+      .from(trainerDuty)
+      .where(eq(trainerDuty.trainer_id, trainer.id))
+      // Note: gte on date column — Drizzle handles date string comparison correctly
+      .orderBy(asc(trainerDuty.date));
 
-    const today_duty = (duty || []).find((d) => d.date === today) || null;
+    // Filter for today onwards (date is stored as string 'YYYY-MM-DD')
+    const upcoming    = duty.filter((d) => d.date >= today);
+    const today_duty  = upcoming.find((d) => d.date === today) || null;
 
     return NextResponse.json({
       today_duty,
-      upcoming: duty || [],
+      upcoming,
     }, {
       headers: { 'Cache-Control': 'private, max-age=60' },
     });
 
   } catch (err) {
-    console.error('[schedule/trainer]', err?.message);
+    console.error('[api/schedule/trainer]', err?.message);
     return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }

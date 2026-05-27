@@ -1,26 +1,18 @@
+import { auth } from '@clerk/nextjs/server';
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
 
 export const metadata = {
   title: 'IronForge — Admin',
 };
 
 export default async function AdminLayout({ children }) {
-  const supabase = await createClient();
+  const { userId, sessionClaims } = await auth();
 
-  const { data: { user } } = await supabase.auth.getUser();
+  if (!userId) redirect('/login');
 
-  if (!user) redirect('/login');
+  const role = sessionClaims?.metadata?.role;
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role, first_name, last_name, email, is_active')
-    .eq('id', user.id)
-    .single();
-
-  if (!profile || !profile.is_active || profile.role !== 'admin') {
-    redirect('/login');
-  }
+  if (role !== 'admin') redirect('/login?error=no_profile');
 
   return (
     <div data-admin-layout>

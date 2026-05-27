@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Dumbbell, Phone, Mail, User } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
+import { Dumbbell, Phone, Mail } from 'lucide-react';
 
 const M = {
   accent: '#E8FF00', accentbg2: 'rgba(232,255,0,0.14)',
@@ -11,41 +10,19 @@ const M = {
 };
 
 export default function MemberTrainer() {
-  const supabase = createClient();
-  const [trainer,  setTrainer]  = useState(null);
-  const [loading,  setLoading]  = useState(true);
+  const [trainer, setTrainer] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    async function fetch() {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { data: member }   = await supabase.from('members').select('id').eq('profile_id', user.id).single();
-      if (!member) { setLoading(false); return; }
-
-      const { data } = await supabase
-        .from('member_trainer_assignments')
-        .select(`
-          assigned_at,
-          trainer:trainers(
-            specialization, bio,
-            profile:profiles(first_name, last_name, email, phone)
-          )
-        `)
-        .eq('member_id', member.id)
-        .eq('is_active', true)
-        .single();
-
-      setTrainer(data?.trainer || null);
-      setLoading(false);
-    }
-    fetch();
+    fetch('/api/member/trainer')
+      .then((r) => r.json())
+      .then(({ trainer }) => { setTrainer(trainer || null); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
   if (loading) return <div style={{ textAlign: 'center', padding: 40, color: M.text2 }}>Loading...</div>;
 
-  const name = trainer
-    ? `${trainer.profile?.first_name || ''} ${trainer.profile?.last_name || ''}`.trim()
-    : '';
-
+  const name     = trainer ? `${trainer.profile?.first_name || ''} ${trainer.profile?.last_name || ''}`.trim() : '';
   const initials = name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
 
   return (
@@ -62,7 +39,6 @@ export default function MemberTrainer() {
         </div>
       ) : (
         <div style={{ background: M.card, border: `1px solid ${M.border}`, borderRadius: 14, overflow: 'hidden' }}>
-          {/* Header */}
           <div style={{ background: M.accentbg2, borderBottom: `1px solid ${M.border}`, padding: '28px 24px', display: 'flex', alignItems: 'center', gap: 18 }}>
             <div style={{ width: 72, height: 72, borderRadius: 16, background: M.card2, border: `2px solid ${M.accent}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, color: M.accent, flexShrink: 0 }}>
               {initials}
@@ -77,7 +53,6 @@ export default function MemberTrainer() {
             </div>
           </div>
 
-          {/* Contact */}
           <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
             {trainer.profile?.phone && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -97,7 +72,6 @@ export default function MemberTrainer() {
             )}
           </div>
 
-          {/* Bio */}
           {trainer.bio && (
             <div style={{ padding: '0 24px 24px' }}>
               <p style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: M.text2, marginBottom: 8 }}>About</p>

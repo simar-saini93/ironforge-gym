@@ -35,8 +35,8 @@ const NAV = [
     items: [
       { label: 'CRM / Leads', href: '/admin/crm',         icon: Target        },
       { label: 'Schedule',    href: '/admin/schedule',  icon: CalendarDays, group: 'OPERATIONS' },
-  { label: 'Access Logs', href: '/admin/access-logs', icon: DoorOpen      },
-      { label: 'Audit Trail', href: '/admin/audit',       icon: ClipboardList },
+      { label: 'Access Logs', href: '/admin/access-logs', icon: DoorOpen      },
+      // { label: 'Audit Trail', href: '/admin/audit',       icon: ClipboardList },
     ],
   },
 ];

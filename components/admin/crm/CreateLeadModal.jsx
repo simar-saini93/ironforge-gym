@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { UserPlus } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/ui/Modal';
 import Input from '@/components/ui/Input';
 import Select from '@/components/ui/Select';
@@ -10,7 +9,6 @@ import Button from '@/components/ui/Button';
 import { leadSchema, flattenZodErrors } from '@/lib/schemas/index';
 
 export default function CreateLeadModal({ open, onClose, onSuccess }) {
-  const supabase = createClient();
   const [loading, setLoading] = useState(false);
   const [errors,  setErrors]  = useState({});
   const [form, setForm] = useState({ first_name: '', last_name: '', email: '', phone: '', source: '', status: 'new', notes: '' });
@@ -27,22 +25,20 @@ export default function CreateLeadModal({ open, onClose, onSuccess }) {
 
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { data: profile }  = await supabase.from('profiles').select('branch_id').eq('id', user.id).single();
-
-      const { error } = await supabase.from('leads').insert({
-        branch_id: profile.branch_id,
-        first_name: form.first_name.trim(),
-        last_name:  form.last_name.trim(),
-        email:     form.email || null,
-        phone:     form.phone || null,
-        source:    form.source,
-        status:    form.status,
-        notes:     form.notes || null,
-        
+      const res = await fetch('/api/admin/leads', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          first_name: form.first_name.trim(),
+          last_name:  form.last_name.trim(),
+          email:      form.email  || null,
+          phone:      form.phone  || null,
+          source:     form.source,
+          status:     form.status,
+          notes:      form.notes  || null,
+        }),
       });
-
-      if (error) throw error;
+      if (!res.ok) throw new Error((await res.json()).error || 'Failed to add lead');
       onSuccess();
       setForm({ first_name: '', last_name: '', email: '', phone: '', source: '', status: 'new', notes: '' });
     } catch (err) {

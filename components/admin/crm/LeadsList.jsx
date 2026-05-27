@@ -3,8 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, UserPlus, Phone, Mail } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import { formatDateTime } from '@/utils/format';
+import { formatDateTime } from '@/lib/utils/format';
 import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Pagination from '@/components/ui/Pagination';
@@ -36,8 +35,7 @@ const STATUS_VARIANT = {
 const ACTIVE_STATUSES = ['new', 'contacted', 'interested'];
 
 export default function LeadsList() {
-  const router   = useRouter();
-  const supabase = createClient();
+  const router = useRouter();
 
   const [leads,      setLeads]      = useState([]);
   const [loading,    setLoading]    = useState(true);
@@ -54,28 +52,17 @@ export default function LeadsList() {
   const fetchLeads = useCallback(async () => {
     setLoading(true);
     try {
-      let query = supabase
-        .from('leads')
-        .select('id, first_name, last_name, email, phone, source, status, notes, created_at, converted_member_id', { count: 'exact' })
-        .order('created_at', { ascending: false })
-        .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+      const params = new URLSearchParams({ page: String(page), showAll: String(showAll) });
+      if (search.trim()) params.set('search', search.trim());
+      if (source)        params.set('source', source);
 
-      if (!showAll) query = query.in('status', ACTIVE_STATUSES);
-      else query = query.in('status', [...ACTIVE_STATUSES, 'lost']); // converted are deleted from DB
-      if (source)   query = query.eq('source', source);
-      if (search.trim()) query = query.or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%`);
+      const res  = await fetch(`/api/admin/leads?${params}`);
+      if (!res.ok) throw new Error('Failed to fetch leads');
+      const json = await res.json();
 
-      // Also get count of untouched new leads
-      const { count: freshCount } = await supabase
-        .from('leads')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'new');
-      setNewCount(freshCount || 0);
-
-      const { data, count, error } = await query;
-      if (error) throw error;
-      setLeads(data || []);
-      setTotal(count || 0);
+      setLeads(json.leads    || []);
+      setTotal(json.total    || 0);
+      setNewCount(json.newCount || 0);
     } catch (err) {
       console.error('Failed to fetch leads:', err?.message);
     } finally {

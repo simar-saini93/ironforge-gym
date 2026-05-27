@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, UserPlus, Filter, Eye, Edit, RefreshCw } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import Badge from '@/components/ui/Badge';
 import Pagination from '@/components/ui/Pagination';
 import EmptyState from '@/components/ui/EmptyState';
@@ -33,8 +32,13 @@ function realSubStatus(sub) {
   return sub.end_date < today ? 'expired' : 'active';
 }
 
-function Avatar({ name = '', size = 32 }) {
+function Avatar({ name = '', size = 32, url = null }) {
   const initials = name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
+  if (url) return (
+    <img src={url} alt={name}
+      style={{ width: size, height: size, borderRadius: 8, objectFit: 'cover', flexShrink: 0, border: '1px solid var(--if-border2)' }}
+    />
+  );
   return (
     <div style={{
       width: size, height: size, borderRadius: 8,
@@ -51,8 +55,7 @@ function Avatar({ name = '', size = 32 }) {
 }
 
 export default function MembersTable() {
-  const router   = useRouter();
-  const supabase = createClient();
+  const router = useRouter();
 
   const [members,  setMembers]  = useState([]);
   const [loading,  setLoading]  = useState(true);
@@ -67,42 +70,17 @@ export default function MembersTable() {
   const fetchMembers = useCallback(async () => {
     setLoading(true);
     try {
-      let query = supabase
-        .from('members')
-        .select(`
-          id, member_number, profile_pic_url, is_active, created_at,
-          profile:profiles!members_profile_id_fkey(first_name, last_name, email, phone),
-          subscription:member_subscriptions(
-            status, start_date, end_date,
-            plan:membership_plans(billing_cycle, price)
-          )
-        `, { count: 'exact' })
-        .order('created_at', { ascending: false })
-        .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+      const params = new URLSearchParams({ page: String(page) });
+      if (search.trim()) params.set('search', search.trim());
+      if (status) params.set('status', status);
+      if (plan)   params.set('plan',   plan);
 
-      if (search.trim()) {
-        query = query.or(
-          `member_number.ilike.%${search}%,profile.first_name.ilike.%${search}%,profile.last_name.ilike.%${search}%,profile.email.ilike.%${search}%`
-        );
-      }
+      const res  = await fetch(`/api/admin/members?${params}`);
+      if (!res.ok) throw new Error('Failed to fetch members');
+      const json = await res.json();
 
-      if (plan) {
-        query = query.eq('subscription.plan.billing_cycle', plan);
-      }
-
-      const { data, count, error } = await query;
-      if (error) throw error;
-
-      let filtered = data || [];
-      if (status) {
-        filtered = filtered.filter((m) => {
-          const sub = m.subscription?.find((s) => s.status === 'active') || m.subscription?.[0];
-          return realSubStatus(sub) === status;
-        });
-      }
-
-      setMembers(filtered);
-      setTotal(count || 0);
+      setMembers(json.members || []);
+      setTotal(json.total    || 0);
     } catch (err) {
       console.error('Failed to fetch members:', err);
     } finally {
@@ -118,8 +96,7 @@ export default function MembersTable() {
   useEffect(() => { setPage(1); }, [search, status, plan]);
 
   function getActiveSub(member) {
-    return member.subscription?.find((s) => s.status === 'active')
-      || member.subscription?.[0];
+    return member.subscription?.[0] || null;
   }
 
   function daysLeft(endDate) {
@@ -250,7 +227,7 @@ export default function MembersTable() {
                 <tbody>
                   {members.map((member, i) => {
                     const sub       = getActiveSub(member);
-                    const subStatus = realSubStatus(sub);
+                    const subStatus = member.realStatus || realSubStatus(sub);
                     const name      = `${member.profile?.first_name || ''} ${member.profile?.last_name || ''}`.trim();
                     const days      = daysLeft(sub?.end_date);
                     const expiring  = days !== null && days <= 14 && days > 0;
@@ -267,7 +244,7 @@ export default function MembersTable() {
                         {/* Member */}
                         <td style={{ padding: '12px 16px', whiteSpace: 'nowrap' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <Avatar name={name} />
+                            <Avatar name={name} url={member.profile_pic_url} />
                             <div>
                               <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 600, color: 'var(--if-text)', lineHeight: 1.3 }}>
                                 {name || 'Unknown'}

@@ -3,8 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, UserPlus, Eye, Edit, CheckCircle2, XCircle } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import { formatDate, fullName, initials } from '@/utils/format';
+import { formatDate, fullName, initials } from '@/lib/utils/format';
 import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Pagination from '@/components/ui/Pagination';
@@ -22,8 +21,7 @@ function Avatar({ name, size = 32 }) {
 }
 
 export default function TrainersList() {
-  const router   = useRouter();
-  const supabase = createClient();
+  const router = useRouter();
 
   const [trainers, setTrainers] = useState([]);
   const [loading,  setLoading]  = useState(true);
@@ -36,30 +34,15 @@ export default function TrainersList() {
   const fetchTrainers = useCallback(async () => {
     setLoading(true);
     try {
-      let query = supabase
-        .from('trainers')
-        .select(`
-          id, is_active, specialization,
-          profile:profiles(first_name, last_name, email, phone),
-          assignments:member_trainer_assignments(id, is_active)
-        `, { count: 'exact' })
-        .order('created_at', { ascending: false })
-        .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+      const params = new URLSearchParams({ page: String(page) });
+      if (search.trim()) params.set('search', search.trim());
 
-      const { data, count, error } = await query;
-      if (error) throw error;
+      const res  = await fetch(`/api/admin/trainers?${params}`);
+      if (!res.ok) throw new Error('Failed to fetch trainers');
+      const json = await res.json();
 
-      let filtered = data || [];
-      if (search.trim()) {
-        const s = search.toLowerCase();
-        filtered = filtered.filter((t) =>
-          fullName(t.profile).toLowerCase().includes(s) ||
-          t.profile?.email?.toLowerCase().includes(s)
-        );
-      }
-
-      setTrainers(filtered);
-      setTotal(count || 0);
+      setTrainers(json.trainers || []);
+      setTotal(json.total      || 0);
     } catch (err) {
       console.error('Failed to fetch trainers:', err?.message);
     } finally {
@@ -112,7 +95,7 @@ export default function TrainersList() {
                 <tbody>
                   {trainers.map((trainer, i) => {
                     const name           = fullName(trainer.profile);
-                    const activeMembers  = trainer.assignments?.filter((a) => a.is_active).length || 0;
+                    const activeMembers  = trainer.active_members || 0;
                     return (
                       <tr key={trainer.id}
                         style={{ borderBottom: i < trainers.length - 1 ? '1px solid var(--if-border)' : 'none', cursor: 'pointer', transition: 'background .12s' }}

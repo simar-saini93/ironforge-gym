@@ -1,190 +1,144 @@
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+import { NextResponse }  from 'next/server';
+import { auth }          from '@clerk/nextjs/server';
+import { drizzleDb }     from '@/db/index';
+import {
+  members, profiles, memberSubscriptions,
+  trainers, leads,
+} from '@/db/schema';
+import { eq, and, ilike, or, inArray } from 'drizzle-orm';
+import { searchLimiter, rateLimitResponse } from '@/lib/utils/rate-limit';
+import { searchSchema, validateQuery }      from '@/lib/utils/validate';
 
-// ── Constants ────────────────────────────────────────────────
-const MIN_QUERY_LEN  = 2;
-const MAX_QUERY_LEN  = 100;
-const MAX_PER_GROUP  = 4;
+const MAX_PER_GROUP = 4;
 
 const REPORT_TABS = [
-  { label: 'Revenue Report',       tab: 'revenue',     },
-  { label: 'Members Report',       tab: 'members',     },
-  { label: 'Expiring Memberships', tab: 'expiring',    },
-  { label: 'Attendance Report',    tab: 'attendance',  },
-  { label: 'Trainer Attendance',   tab: 'trainer_att', },
-  { label: 'Leads Report',         tab: 'leads',       },
+  { label: 'Revenue Report',       tab: 'revenue'     },
+  { label: 'Members Report',       tab: 'members'     },
+  { label: 'Expiring Memberships', tab: 'expiring'    },
+  { label: 'Attendance Report',    tab: 'attendance'  },
+  { label: 'Trainer Attendance',   tab: 'trainer_att' },
+  { label: 'Leads Report',         tab: 'leads'       },
 ];
 
-// ── Supabase admin client (service role — bypasses RLS) ──────
-function getAdminClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
-}
-
-// ── Verify session — only admins can search ──────────────────
-async function getSessionRole(request) {
-  try {
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-      {
-        cookies: {
-          getAll: () => cookieStore.getAll(),
-          setAll: () => {},
-        },
-      }
-    );
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-
-    const { data: profile } = await getAdminClient()
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single();
-
-    return profile?.role || null;
-  } catch {
-    return null;
-  }
-}
-
-// ── Input sanitization ───────────────────────────────────────
 function sanitize(q) {
-  return q
-    .trim()
-    .replace(/[%_\\]/g, '\\$&') // escape SQL LIKE special chars
-    .slice(0, MAX_QUERY_LEN);
+  return q.trim().replace(/[%_\\]/g, '\\$&').slice(0, 100);
 }
 
-// ── Main handler ─────────────────────────────────────────────
 export async function GET(request) {
   try {
+    // ── Auth ──────────────────────────────────────────────────
+    const { userId, sessionClaims } = await auth();
+    if (!userId || sessionClaims?.metadata?.role !== 'admin') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // ── Rate limit — 30 per minute per user ───────────────────
+    try { await searchLimiter.check(30, userId); }
+    catch { return rateLimitResponse(30); }
+
+    // ── Validate query ────────────────────────────────────────
     const { searchParams } = new URL(request.url);
-    const rawQuery = searchParams.get('q') || '';
+    const { success, data, error } = validateQuery(searchSchema, searchParams);
+    if (!success) return error;
 
-    // ── Validate query ───────────────────────────────────────
-    if (!rawQuery || rawQuery.trim().length < MIN_QUERY_LEN) {
-      return NextResponse.json(
-        { error: `Query must be at least ${MIN_QUERY_LEN} characters` },
-        { status: 400 }
-      );
-    }
+    const q   = sanitize(data.q);
+    const pat = `%${q}%`;
+    const s   = q.toLowerCase();
 
-    // ── Auth check ───────────────────────────────────────────
-    const role = await getSessionRole(request);
-    if (!role || role !== 'admin') {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
-
-    const q = sanitize(rawQuery);
-    const s = q.toLowerCase();
-    const db = getAdminClient();
-
-    // ── Run all queries in parallel ──────────────────────────
-    const [
-      { data: members,  error: membersError  },
-      { data: trainers, error: trainersError },
-      { data: leads,    error: leadsError    },
-    ] = await Promise.all([
-
-      // Members — fetch all active, filter by name/email/number client-side
-      db.from('members')
-        .select(`
-          id,
-          member_number,
-          is_active,
-          profile:profiles!members_profile_id_fkey (
-            first_name, last_name, email
+    // ── Parallel queries ──────────────────────────────────────
+    const [memberRows, trainerRows, leadRows] = await Promise.all([
+      // Members — filter by name, email, member_number
+      drizzleDb
+        .select({
+          id:            members.id,
+          member_number: members.member_number,
+          is_active:     members.is_active,
+          first_name:    profiles.first_name,
+          last_name:     profiles.last_name,
+          email:         profiles.email,
+          sub_status:    memberSubscriptions.status,
+        })
+        .from(members)
+        .leftJoin(profiles, eq(members.profile_id, profiles.id))
+        .leftJoin(memberSubscriptions, and(
+          eq(memberSubscriptions.member_id, members.id),
+          eq(memberSubscriptions.status, 'active'),
+        ))
+        .where(and(
+          eq(members.is_active, true),
+          or(
+            ilike(profiles.first_name,   pat),
+            ilike(profiles.last_name,    pat),
+            ilike(profiles.email,        pat),
+            ilike(members.member_number, pat),
           ),
-          subscription:member_subscriptions (
-            status
-          )
-        `)
-        .eq('is_active', true)
-        .limit(200),
+        ))
+        .limit(MAX_PER_GROUP),
 
-      // Trainers — fetch all active, filter by name/email client-side
-      db.from('trainers')
-        .select(`
-          id,
-          specialization,
-          is_active,
-          profile:profiles!trainers_profile_id_fkey (
-            first_name, last_name, email
-          )
-        `)
-        .eq('is_active', true)
-        .limit(100),
+      // Trainers — filter by name, email
+      drizzleDb
+        .select({
+          id:             trainers.id,
+          specialization: trainers.specialization,
+          first_name:     profiles.first_name,
+          last_name:      profiles.last_name,
+          email:          profiles.email,
+        })
+        .from(trainers)
+        .leftJoin(profiles, eq(trainers.profile_id, profiles.id))
+        .where(and(
+          eq(trainers.is_active, true),
+          or(
+            ilike(profiles.first_name, pat),
+            ilike(profiles.last_name,  pat),
+            ilike(profiles.email,      pat),
+          ),
+        ))
+        .limit(MAX_PER_GROUP),
 
-      // Leads — search by name, phone, email (active only)
-      db.from('leads')
-        .select('id, first_name, last_name, phone, email, status, source')
-        .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%`)
-        .in('status', ['new', 'contacted', 'interested'])
-        .order('created_at', { ascending: false })
+      // Leads — filter by name, phone, email
+      drizzleDb
+        .select({
+          id:         leads.id,
+          first_name: leads.first_name,
+          last_name:  leads.last_name,
+          phone:      leads.phone,
+          email:      leads.email,
+          status:     leads.status,
+          source:     leads.source,
+        })
+        .from(leads)
+        .where(and(
+          inArray(leads.status, ['new', 'contacted', 'interested']),
+          or(
+            ilike(leads.first_name, pat),
+            ilike(leads.last_name,  pat),
+            ilike(leads.phone,      pat),
+            ilike(leads.email,      pat),
+          ),
+        ))
         .limit(MAX_PER_GROUP),
     ]);
 
-    // Log errors but don't fail the whole request
-    if (membersError)  console.error('[search] members error:',  membersError.message);
-    if (trainersError) console.error('[search] trainers error:', trainersError.message);
-    if (leadsError)    console.error('[search] leads error:',    leadsError.message);
+    // ── Shape results ─────────────────────────────────────────
+    const filteredMembers = memberRows.map((m) => ({
+      id:            m.id,
+      member_number: m.member_number,
+      first_name:    m.first_name,
+      last_name:     m.last_name,
+      email:         m.email,
+      sub_status:    m.sub_status || null,
+    }));
 
-    // ── Filter members by name/email client-side ─────────────
-    const filteredMembers = (members || [])
-      .filter((m) => {
-        const fname = (m.profile?.first_name || '').toLowerCase();
-        const lname = (m.profile?.last_name  || '').toLowerCase();
-        const name  = `${fname} ${lname}`.trim();
-        const email = (m.profile?.email       || '').toLowerCase();
-        const num   = (m.member_number        || '').toLowerCase();
-        return name.includes(s) || fname.includes(s) || lname.includes(s) || email.includes(s) || num.includes(s);
-      })
-      .slice(0, MAX_PER_GROUP)
-      .map((m) => ({
-        id:            m.id,
-        member_number: m.member_number,
-        first_name:    m.profile?.first_name,
-        last_name:     m.profile?.last_name,
-        email:         m.profile?.email,
-        sub_status:    m.subscription?.find((s) => s.status === 'active')?.status || m.subscription?.[0]?.status || null,
-      }));
+    const filteredTrainers = trainerRows.map((t) => ({
+      id:             t.id,
+      first_name:     t.first_name,
+      last_name:      t.last_name,
+      email:          t.email,
+      specialization: t.specialization,
+    }));
 
-    // ── Filter trainers by name/email client-side ─────────────
-    const filteredTrainers = (trainers || [])
-      .filter((t) => {
-        const fname = (t.profile?.first_name || '').toLowerCase();
-        const lname = (t.profile?.last_name  || '').toLowerCase();
-        const name  = `${fname} ${lname}`.trim();
-        const email = (t.profile?.email       || '').toLowerCase();
-        return name.includes(s) || fname.includes(s) || lname.includes(s) || email.includes(s);
-      })
-      .slice(0, MAX_PER_GROUP)
-      .map((t) => ({
-        id:             t.id,
-        first_name:     t.profile?.first_name,
-        last_name:      t.profile?.last_name,
-        email:          t.profile?.email,
-        specialization: t.specialization,
-      }));
-
-    // ── Static report matches ─────────────────────────────────
-    const reports = REPORT_TABS
-      .filter((r) => r.label.toLowerCase().includes(s))
-      .map((r) => ({ label: r.label, tab: r.tab }));
-
-    // ── Shape leads ───────────────────────────────────────────
-    const shapedLeads = (leads || []).map((l) => ({
+    const shapedLeads = leadRows.map((l) => ({
       id:         l.id,
       first_name: l.first_name,
       last_name:  l.last_name,
@@ -194,30 +148,26 @@ export async function GET(request) {
       source:     l.source,
     }));
 
-    const payload = {
+    // ── Report tab matches ────────────────────────────────────
+    const reports = REPORT_TABS
+      .filter((r) => r.label.toLowerCase().includes(s))
+      .map((r) => ({ label: r.label, tab: r.tab }));
+
+    return NextResponse.json({
       members:  filteredMembers,
       trainers: filteredTrainers,
       leads:    shapedLeads,
       reports,
       meta: {
-        query: rawQuery,
+        query: data.q,
         total: filteredMembers.length + filteredTrainers.length + shapedLeads.length + reports.length,
       },
-    };
-
-    return NextResponse.json(payload, {
-      status: 200,
-      headers: {
-        // Short cache — search results should be fresh but not hammered
-        'Cache-Control': 'private, max-age=10, stale-while-revalidate=30',
-      },
+    }, {
+      headers: { 'Cache-Control': 'private, max-age=10, stale-while-revalidate=30' },
     });
 
   } catch (err) {
-    console.error('[search] Unexpected error:', err?.message);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    console.error('[api/admin/search]', err?.message);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

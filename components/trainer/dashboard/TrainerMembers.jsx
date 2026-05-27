@@ -2,11 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { Search, Eye } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import { formatDate, fullName, initials, daysLeft, planLabel } from '@/utils/format';
-import Badge from '@/components/ui/Badge';
+import { formatDate, fullName, initials, daysLeft, planLabel } from '@/lib/utils/format';
+import Badge        from '@/components/ui/Badge';
 import { PageSpinner } from '@/components/ui/Spinner';
-import Modal from '@/components/ui/Modal';
+import Modal        from '@/components/ui/Modal';
 
 const T = {
   accent: '#39ff14', accentbg2: 'rgba(57,255,20,0.12)',
@@ -16,37 +15,17 @@ const T = {
 };
 
 export default function TrainerMembers() {
-  const supabase = createClient();
-
-  const [members,   setMembers]   = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [search,    setSearch]    = useState('');
-  const [selected,  setSelected]  = useState(null);
-  const [detailOpen,setDetailOpen]= useState(false);
+  const [members,    setMembers]    = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [search,     setSearch]     = useState('');
+  const [selected,   setSelected]   = useState(null);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   useEffect(() => {
-    async function fetch() {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { data: trainer }  = await supabase.from('trainers').select('id').eq('profile_id', user.id).single();
-      if (!trainer) { setLoading(false); return; }
-
-      const { data } = await supabase
-        .from('member_trainer_assignments')
-        .select(`
-          id, assigned_at,
-          member:members(
-            id, member_number, is_active, created_at,
-            profile:profiles(first_name, last_name, email, phone),
-            subscription:member_subscriptions(status, end_date, plan:membership_plans(billing_cycle))
-          )
-        `)
-        .eq('trainer_id', trainer.id)
-        .eq('is_active', true);
-
-      setMembers((data || []).map((a) => a.member).filter(Boolean));
-      setLoading(false);
-    }
-    fetch();
+    fetch('/api/trainer/members')
+      .then((r) => r.json())
+      .then(({ members }) => { setMembers(members || []); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
   const filtered = members.filter((m) => {
@@ -60,6 +39,7 @@ export default function TrainerMembers() {
   return (
     <>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
         {/* Search */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: T.card, border: `1px solid ${T.border2}`, borderRadius: 8, padding: '0 12px', height: 38, maxWidth: 320 }}
           onFocusCapture={(e) => (e.currentTarget.style.borderColor = T.accent)}
@@ -140,12 +120,12 @@ export default function TrainerMembers() {
         {selected && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {[
-              { label: 'Email',  value: selected.profile?.email },
-              { label: 'Phone',  value: selected.profile?.phone },
-              { label: 'Member #', value: selected.member_number },
+              { label: 'Email',        value: selected.profile?.email },
+              { label: 'Phone',        value: selected.profile?.phone },
+              { label: 'Member #',     value: selected.member_number },
               { label: 'Member Since', value: formatDate(selected.created_at) },
-              { label: 'Plan',   value: planLabel(selected.subscription?.find((s) => s.status === 'active')?.plan?.billing_cycle) },
-              { label: 'Expires', value: formatDate(selected.subscription?.find((s) => s.status === 'active')?.end_date) },
+              { label: 'Plan',         value: planLabel(selected.subscription?.find((s) => s.status === 'active')?.plan?.billing_cycle) },
+              { label: 'Expires',      value: formatDate(selected.subscription?.find((s) => s.status === 'active')?.end_date) },
             ].map((r) => (
               <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${T.border}` }}>
                 <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: T.text2 }}>{r.label}</span>

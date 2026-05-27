@@ -2,17 +2,14 @@
 
 import { useState, useEffect } from 'react';
 import { RefreshCw } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import Modal   from '@/components/ui/Modal';
 import Button  from '@/components/ui/Button';
 import Input   from '@/components/ui/Input';
 import Select  from '@/components/ui/Select';
 import { renewSchema, flattenZodErrors } from '@/lib/schemas/index';
-import { calcEndDate, formatCurrency, formatDate } from '@/utils/format';
+import { calcEndDate, formatCurrency, formatDate } from '@/lib/utils/format';
 
 export default function RenewModal({ open, onClose, memberId, memberName, onSuccess }) {
-  const supabase = createClient();
-
   const [plans,      setPlans]      = useState([]);
   const [activeSub,  setActiveSub]  = useState(null);
   const [loading,    setLoading]    = useState(false);
@@ -29,18 +26,12 @@ export default function RenewModal({ open, onClose, memberId, memberName, onSucc
     setFetching(true);
 
     Promise.all([
-      supabase.from('membership_plans').select('id, billing_cycle, price').eq('is_active', true),
-      supabase.from('member_subscriptions')
-        .select('id, end_date, status, plan:membership_plans(billing_cycle)')
-        .eq('member_id', memberId)
-        .in('status', ['active', 'frozen'])
-        .order('end_date', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-    ]).then(([{ data: plansData }, { data: sub }]) => {
-      setPlans(plansData || []);
+      fetch('/api/admin/settings/plans').then((r) => r.json()),
+      fetch(`/api/admin/members/${memberId}`).then((r) => r.json()),
+    ]).then(([plansJson, memberJson]) => {
+      setPlans((plansJson.plans || []).filter((p) => p.is_active));
+      const sub = memberJson.activeSub || null;
       setActiveSub(sub);
-      // Auto-set start date to day AFTER active sub ends
       let startDate = new Date().toISOString().split('T')[0];
       if (sub?.end_date) {
         const [y, m, d] = sub.end_date.split('-').map(Number);
@@ -52,10 +43,9 @@ export default function RenewModal({ open, onClose, memberId, memberName, onSucc
     });
   }, [open, memberId]);
 
-  const selectedPlan = plans.find((p) => p.id === form.plan_id);
+  const selectedPlan   = plans.find((p) => p.id === form.plan_id);
   const previewEndDate = form.plan_id && form.start_date
-    ? calcEndDate(form.start_date, selectedPlan?.billing_cycle)
-    : null;
+    ? calcEndDate(form.start_date, selectedPlan?.billing_cycle) : null;
 
   function onChange(field, value) {
     if (field === 'plan_id') {
@@ -74,51 +64,27 @@ export default function RenewModal({ open, onClose, memberId, memberName, onSucc
 
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { data: profile }  = await supabase.from('profiles').select('branch_id').eq('id', user.id).single();
+      const res = await fetch(`/api/admin/members/${memberId}`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          plan_id:        form.plan_id,
+          start_date:     form.start_date,
+          amount_paid:    Number(form.amount_paid),
+          payment_method: form.payment_method,
+          reference_no:   form.reference_no || null,
+          notes:          form.notes || null,
+          active_sub_id:  activeSub?.id || null,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Failed to renew');
 
-      // Mark current active sub as completed
-      if (activeSub?.id) {
-        await supabase.from('member_subscriptions')
-          .update({ status: 'completed' })
-          .eq('id', activeSub.id);
-      }
-
-      const endDate = calcEndDate(form.start_date, selectedPlan?.billing_cycle);
-
-      const { data: sub, error: subError } = await supabase
-        .from('member_subscriptions')
-        .insert({
-          member_id:  memberId,
-          plan_id:    form.plan_id,
-          branch_id:  profile.branch_id,
-          start_date: form.start_date,
-          end_date:   endDate,
-          status:     'active',
-          renewed_by: user.id,
-          notes:      form.notes || null,
-        })
-        .select('id').single();
-
-      if (subError) throw subError;
-
-      const { data: paymentInserted } = await supabase.from('payments').insert({
-        member_id:       memberId,
-        subscription_id: sub.id,
-        branch_id:       profile.branch_id,
-        amount:          Number(form.amount_paid),
-        payment_method:  form.payment_method,
-        reference_no:    form.reference_no || null,
-        recorded_by:     user.id,
-        notes:           form.notes || null,
-      }).select('id').single();
-
-      if (paymentInserted?.id) {
+      if (json.paymentId) {
         fetch('/api/admin/receipt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ payment_id: paymentInserted.id, type: 'renew' }),
-        }).catch((e) => console.error('Receipt email error:', e?.message));
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payment_id: json.paymentId, type: 'renew' }),
+        }).catch(() => {});
       }
 
       onSuccess();
@@ -141,23 +107,15 @@ export default function RenewModal({ open, onClose, memberId, memberName, onSucc
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-        {/* Current sub info */}
         {activeSub && (
           <div style={{ padding: '10px 14px', background: 'var(--if-accentbg2)', border: '1px solid var(--if-accent)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: 'var(--if-text2)' }}>
-              Current sub ends
-            </span>
-            <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 13, fontWeight: 700, color: 'var(--if-accent)' }}>
-              {formatDate(activeSub.end_date)}
-            </span>
+            <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: 'var(--if-text2)' }}>Current sub ends</span>
+            <span style={{ fontFamily: "'Outfit', sans-serif", fontSize: 13, fontWeight: 700, color: 'var(--if-accent)' }}>{formatDate(activeSub.end_date)}</span>
           </div>
         )}
 
-        {/* Plan */}
         <div>
-          <p style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: 'var(--if-text2)', marginBottom: 10 }}>
-            Select Plan *
-          </p>
+          <p style={{ fontFamily: "'Outfit', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: '.15em', textTransform: 'uppercase', color: 'var(--if-text2)', marginBottom: 10 }}>Select Plan *</p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
             {plans.map((plan) => {
               const sel = form.plan_id === plan.id;
@@ -178,18 +136,11 @@ export default function RenewModal({ open, onClose, memberId, memberName, onSucc
           {errors.plan_id && <p style={{ color: 'var(--if-red)', fontSize: 12, marginTop: 4 }}>{errors.plan_id}</p>}
         </div>
 
-        {/* Start date — editable, auto-populated from active sub end date */}
-        <Input
-          label="Start Date"
-          required
-          type="date"
-          value={form.start_date}
-          onChange={(e) => onChange('start_date', e.target.value)}
-          error={errors.start_date}
-          hint={activeSub ? `Auto-set from current sub end date` : undefined}
+        <Input label="Start Date" required type="date" value={form.start_date}
+          onChange={(e) => onChange('start_date', e.target.value)} error={errors.start_date}
+          hint={activeSub ? 'Auto-set from current sub end date' : undefined}
         />
 
-        {/* End date preview */}
         {previewEndDate && (
           <div style={{ padding: '8px 14px', background: 'var(--if-bg3)', border: '1px solid var(--if-border)', borderRadius: 8, display: 'flex', justifyContent: 'space-between' }}>
             <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: 'var(--if-muted)' }}>New sub ends</span>
@@ -197,7 +148,6 @@ export default function RenewModal({ open, onClose, memberId, memberName, onSucc
           </div>
         )}
 
-        {/* Payment */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <Input label="Amount Paid" required type="number" value={form.amount_paid}
             onChange={(e) => onChange('amount_paid', e.target.value)} error={errors.amount_paid}

@@ -3,8 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, RefreshCw, Snowflake } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import { formatDate, formatCurrency, fullName, daysLeft, planLabel } from '@/utils/format';
+import { formatDate, formatCurrency, fullName, daysLeft, planLabel } from '@/lib/utils/format';
 import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Pagination from '@/components/ui/Pagination';
@@ -16,7 +15,6 @@ const PAGE_SIZE = 20;
 
 export default function SubscriptionsList() {
   const router   = useRouter();
-  const supabase = createClient();
 
   const [subs,       setSubs]       = useState([]);
   const [loading,    setLoading]    = useState(true);
@@ -31,32 +29,15 @@ export default function SubscriptionsList() {
   const fetchSubs = useCallback(async () => {
     setLoading(true);
     try {
-      let query = supabase
-        .from('member_subscriptions')
-        .select(`
-          id, status, start_date, end_date,
-          plan:membership_plans(billing_cycle, price),
-          member:members(id, member_number, profile:profiles(first_name, last_name))
-        `, { count: 'exact' })
-        .order('created_at', { ascending: false })
-        .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+      const params = new URLSearchParams({ page: String(page) });
+      if (search.trim()) params.set('search', search.trim());
+      if (status)        params.set('status', status);
 
-      if (status) query = query.eq('status', status);
-
-      const { data, count, error } = await query;
-      if (error) throw error;
-
-      let filtered = data || [];
-      if (search.trim()) {
-        const s = search.toLowerCase();
-        filtered = filtered.filter((sub) =>
-          fullName(sub.member?.profile).toLowerCase().includes(s) ||
-          sub.member?.member_number?.toLowerCase().includes(s)
-        );
-      }
-
-      setSubs(filtered);
-      setTotal(count || 0);
+      const res  = await fetch(`/api/admin/subscriptions?${params}`);
+      if (!res.ok) throw new Error('Failed to fetch subscriptions');
+      const json = await res.json();
+      setSubs(json.subs  || []);
+      setTotal(json.total || 0);
     } catch (err) {
       console.error('Failed to fetch subscriptions:', err?.message);
     } finally {
@@ -73,12 +54,12 @@ export default function SubscriptionsList() {
 
   async function handleFreeze(subId) {
     if (!confirm('Freeze this subscription?')) return;
-    await supabase.from('member_subscriptions').update({ status: 'frozen' }).eq('id', subId);
+    await fetch('/api/admin/subscriptions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: subId, status: 'frozen' }) });
     fetchSubs();
   }
 
   async function handleUnfreeze(subId) {
-    await supabase.from('member_subscriptions').update({ status: 'active' }).eq('id', subId);
+    await fetch('/api/admin/subscriptions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: subId, status: 'active' }) });
     fetchSubs();
   }
 

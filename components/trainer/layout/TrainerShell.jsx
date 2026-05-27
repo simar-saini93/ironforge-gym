@@ -10,7 +10,7 @@ import {
   LayoutDashboard, Users, CalendarDays,
   LogOut, Menu, X, Dumbbell,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
+import { useUser, useClerk } from '@clerk/nextjs';
 
 const T = {
   bg:        '#080808',
@@ -60,7 +60,8 @@ function NavItem({ item, active, onClick }) {
 export default function TrainerShell({ children }) {
   const pathname = usePathname();
   const router   = useRouter();
-  const supabase = createClient();
+  const { user: clerkUser } = useUser();
+  const { signOut }         = useClerk();
 
   const [profile,    setProfile]    = useState(null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -74,42 +75,36 @@ export default function TrainerShell({ children }) {
   }, []);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) return;
-      supabase.from('profiles').select('first_name, last_name, email')
-        .eq('id', user.id).single()
-        .then(({ data }) => setProfile(data));
-    });
+    if (!clerkUser?.id) return;
+    fetch('/api/trainer/profile')
+      .then((r) => r.json())
+      .then(({ profile }) => { if (profile) setProfile(profile); })
+      .catch(() => {});
+  }, [clerkUser?.id]);
+
+  useEffect(() => {
+    const fn = () => { if (window.innerWidth >= 768) setMobileOpen(false); };
+    window.addEventListener('resize', fn);
+    return () => window.removeEventListener('resize', fn);
   }, []);
 
   async function handleLogout() {
-    await supabase.auth.signOut();
-    router.push('/login');
-    router.refresh();
+    await signOut({ redirectUrl: '/login' });
   }
 
   function isActive(href) {
     return pathname === href || pathname.startsWith(href + '/');
   }
 
-  const initials = profile
-    ? `${profile.first_name?.[0] || ''}${profile.last_name?.[0] || ''}`.toUpperCase()
-    : '?';
-
-  const displayName = profile
-    ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim()
-    : 'Trainer';
+  const initials    = profile ? `${profile.first_name?.[0] || ''}${profile.last_name?.[0] || ''}`.toUpperCase() : '?';
+  const displayName = profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() : 'Trainer';
 
   return (
     <div style={{ minHeight: '100vh', background: T.bg, color: T.text, fontFamily: "'Barlow', sans-serif" }}>
 
       {/* Top navbar */}
-      <header style={{
-        position: 'sticky', top: 0, zIndex: 40, height: 60,
-        background: T.bg2, borderBottom: `1px solid ${T.border}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 20px', gap: 12,
-      }}>
+      <header style={{ position: 'sticky', top: 0, zIndex: 40, height: 60, background: T.bg2, borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 20px', gap: 12 }}>
+
         {/* Logo */}
         <Link href="/trainer/dashboard" style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ width: 32, height: 32, borderRadius: 8, background: T.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -127,9 +122,10 @@ export default function TrainerShell({ children }) {
           ))}
         </nav>
 
-        {/* Right — gym status + user pill + logout + hamburger */}
+        {/* Right */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
           <GymStatusBar accentColor="#22c55e" />
+
           {/* Trainer badge */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 10px', background: T.accentbg2, border: `1px solid ${T.accent}`, borderRadius: 20 }}>
             <div style={{ width: 6, height: 6, borderRadius: '50%', background: T.accent }} />
@@ -157,7 +153,7 @@ export default function TrainerShell({ children }) {
             <LogOut size={15} />
           </button>
 
-          {/* Hamburger — mobile only */}
+          {/* Hamburger */}
           <button onClick={() => setMobileOpen((p) => !p)}
             style={{ width: 36, height: 36, borderRadius: 8, background: 'transparent', border: `1px solid ${T.border2}`, display: isMobile ? 'flex' : 'none', alignItems: 'center', justifyContent: 'center', color: T.text2, cursor: 'pointer' }}
           >
@@ -169,9 +165,7 @@ export default function TrainerShell({ children }) {
       {/* Mobile drawer */}
       {mobileOpen && (
         <>
-          <div onClick={() => setMobileOpen(false)}
-            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 49, backdropFilter: 'blur(2px)' }}
-          />
+          <div onClick={() => setMobileOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 49, backdropFilter: 'blur(2px)' }} />
           <div style={{ position: 'fixed', top: 60, left: 0, right: 0, background: T.bg2, borderBottom: `1px solid ${T.border}`, padding: '12px 16px', zIndex: 50, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {NAV.map((item) => (
               <NavItem key={item.href} item={item} active={isActive(item.href)} onClick={() => setMobileOpen(false)} />
